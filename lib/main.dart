@@ -1,6 +1,8 @@
-import 'package:apigee_explorer/service/files_service.dart';
+import 'package:apigee_explorer/providers/internal_provider.dart';
 import 'package:apigee_explorer/views/proxy_explorer.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
 
 void main() => runApp(const MyApp());
 
@@ -13,7 +15,6 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> {
   int _selectedIndex = 0;
-  var proxyFolder = FilesService.parseProxyFolder('/Users/monta/Downloads/apigee/first-proxy/apiproxy');
   void _onChangePage(BuildContext context, int index) {
     setState(() {
       _selectedIndex = index;
@@ -24,13 +25,13 @@ class _MyAppState extends State<MyApp> {
               pageBuilder: (_, __, ___) => [
                 ProxyExplorer(bottomBar: _buildBottomBar),
                 ProxyExplorer(bottomBar: _buildBottomBar),
-                //DigimonPage(bottomBar: _buildBottomBar),
                 ProxyExplorer(bottomBar: _buildBottomBar)
               ][index]));
     });
   }
 
   Widget _buildBottomBar(BuildContext context) {
+
     return BottomNavigationBar(
       items: <BottomNavigationBarItem>[
         BottomNavigationBarItem(
@@ -71,22 +72,27 @@ class _MyAppState extends State<MyApp> {
   // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Graphite',
-      theme: ThemeData(
-        primarySwatch: Colors.teal,
-        backgroundColor: Colors.white,
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => ApigeeProvider()),
+      ],
+      child: MaterialApp(
+        title: 'Flutter Graphite',
+        theme: ThemeData(
+          primarySwatch: Colors.teal,
+          backgroundColor: Colors.white,
+        ),
+        debugShowCheckedModeBanner: false,
+        home: ProxyExplorer(bottomBar: _buildBottomBar),
+        routes: <String, WidgetBuilder>{
+          '/flowchart': (BuildContext context) =>
+              ProxyExplorer(bottomBar: _buildBottomBar),
+          '/labels': (BuildContext context) =>
+              ProxyExplorer(bottomBar: _buildBottomBar),
+          '/complex': (BuildContext context) =>
+              ProxyExplorer(bottomBar: _buildBottomBar),
+        },
       ),
-      debugShowCheckedModeBanner: false,
-      home: ProxyExplorer(bottomBar: _buildBottomBar),
-      routes: <String, WidgetBuilder>{
-        '/flowchart': (BuildContext context) =>
-            ProxyExplorer(bottomBar: _buildBottomBar),
-        '/labels': (BuildContext context) =>
-            ProxyExplorer(bottomBar: _buildBottomBar),
-        '/complex': (BuildContext context) =>
-            ProxyExplorer(bottomBar: _buildBottomBar),
-      },
     );
   }
 }
