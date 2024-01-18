@@ -1,12 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:petitparser/src/core/result.dart';
+
+import '../utils/condition_utils.dart';
 
 class EndpointTile extends StatelessWidget {
   final String name;
-  final String? verb;
   final bool selected;
   final void Function()? onSelect;
-  const EndpointTile({super.key, required this.name, this.verb, this.selected = false, this.onSelect});
+  final Result<dynamic>? condition;
+  final bool showVerbBadge;
+  const EndpointTile({super.key, required this.name, this.selected = false, this.onSelect, this.condition, this.showVerbBadge = true,});
 
   @override
   Widget build(BuildContext context) {
@@ -20,24 +24,36 @@ class EndpointTile extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.all(8.0),
           child: Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              InkWell(
-                onTap: onSelect,
-                child: Badge(
-                  textStyle: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                  largeSize: 20,
-                  backgroundColor: _resolveColor(verb),
-                  label: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                    child: Center(child: Text(verb, textAlign: TextAlign.center,)),
+              if (showVerbBadge)
+                InkWell(
+                  onTap: onSelect,
+                  child: Badge(
+                    textStyle: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                    largeSize: 20,
+                    backgroundColor: _resolveColor(verb),
+                    label: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                      child: Center(child: Text(verb, textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 5,),
+              if (showVerbBadge)
+                const SizedBox(width: 5,),
               InkWell(
                 onTap: onSelect,
-                child: Text(name,),
+                child: Text(name, style: const TextStyle(fontWeight: FontWeight.normal, fontSize: 12),),
               ),
+              const SizedBox(width: 5,),
+              if (condition != null)
+                InkWell(
+                  onTap: () => ConditionUtils.showTextPopover(context: context, text: condition?.buffer ?? 'No Content'),
+                  child: const Padding(
+                    padding: EdgeInsets.only(left: 8.0),
+                    child: Icon(Icons.filter_list, color: Colors.grey,),
+                  ),
+                ),
             ],
           ),
         ),
@@ -46,10 +62,7 @@ class EndpointTile extends StatelessWidget {
   }
 
   String _resolveVerb() {
-    if (verb == null) {
-      return "COND";
-    }
-    return verb!;
+    return condition != null ? ConditionUtils.getVerb(condition!) : "ALL";
   }
 
   _resolveColor(String verb) {

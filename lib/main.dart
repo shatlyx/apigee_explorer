@@ -81,6 +81,11 @@ class _MyAppState extends State<MyApp> {
         theme: ThemeData(
           primarySwatch: Colors.teal,
           backgroundColor: Colors.white,
+          textSelectionTheme: const TextSelectionThemeData(
+            cursorColor: Colors.blue,
+            selectionColor: Colors.blue,
+            selectionHandleColor: Colors.blue,
+          )
         ),
         debugShowCheckedModeBanner: false,
         home: ProxyExplorer(bottomBar: _buildBottomBar),

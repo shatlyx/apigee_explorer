@@ -21,31 +21,31 @@ class UnknownPolicy extends Policy {
   @override
   Set<String> fetchInputs() {
     // TODO: implement fetchInputs
-    throw UnimplementedError();
+    return {};
   }
 
   @override
   Set<String> fetchOutputs() {
     // TODO: implement fetchOutputs
-    throw UnimplementedError();
+    return {};
   }
 
   @override
   Set<String> getErrors() {
     // TODO: implement getErrors
-    throw UnimplementedError();
+    return {};
   }
 
   @override
   Set<String> getWarnings() {
     // TODO: implement getWarnings
-    throw UnimplementedError();
+    return {};
   }
 
   @override
   bool isValid() {
     // TODO: implement isValid
-    throw UnimplementedError();
+    return true;
   }
 
 

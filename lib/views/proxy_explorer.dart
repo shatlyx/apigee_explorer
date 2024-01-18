@@ -1,8 +1,13 @@
+import 'package:apigee_explorer/views/policies_explorer_area.dart';
+import 'package:apigee_explorer/views/resources_explorer_area.dart';
+import 'package:apigee_explorer/views/resources_explorer_area_2.dart';
+import 'package:apigee_explorer/views/target_endpoints_explorer.dart';
 import 'package:apigee_explorer/views/xml_editor_area.dart';
+import 'package:contained_tab_bar_view/contained_tab_bar_view.dart';
 import 'package:flutter/material.dart';
 import 'package:multi_split_view/multi_split_view.dart';
 
-import 'api_proxy_explorer_area.dart';
+import 'proxy_endpoints_explorer.dart';
 import 'diagram_area.dart';
 
 class ProxyExplorer extends StatefulWidget {
@@ -27,20 +32,47 @@ class ProxyExplorerState extends State<ProxyExplorer> {
           children: [
             SplitView(
               child: MultiSplitView(
-                initialAreas: [Area(size: 240), Area(weight: 0.5)],
+                initialAreas: [Area(size: 240), Area(weight: 0.7)],
                 axis: Axis.horizontal,
                 children: [
-                  const ApiProxyExplorerArea(),
-                  const DiagramArea(),
-                  SplitView(
-                    child: MultiSplitView(
-                      axis: Axis.vertical,
-                      children: [
-                        const XmlEditorArea(),
-                        Container(color: Colors.green,),
-                      ],
+                  ContainedTabBarView(
+                    tabs: const [
+                      Text('Proxy'),
+                      Text('Policies'),
+                      Text('Resources'),
+                    ],
+                    views: const [
+                      SingleChildScrollView(
+                        child: Column(
+                          children: [
+                            ProxyEndpointsExplorer(),
+                            TargetEndpointsExplorer(),
+                          ],
+                        ),
+                      ),
+                      SingleChildScrollView(child: PoliciesExplorerArea()),
+                      SingleChildScrollView(child: ResourcesExplorerArea2()),
+                    ],
+                    tabBarProperties: TabBarProperties(
+                      //width: 200,
+                      height: 40,
+                      background: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade100,
+                          borderRadius: const BorderRadius.only(topLeft: Radius.circular(8.0), topRight: Radius.circular(8.0)),
+                        ),
+                      ),
+                      position: TabBarPosition.top,
+                      alignment: TabBarAlignment.center,
+                      indicatorColor: Colors.blue,
+                      labelColor: Colors.blue,
+                      unselectedLabelColor: Colors.black,
+                      //indicatorSize: 4,
+                      indicatorWeight: 4,
                     ),
                   ),
+                  const DiagramArea(),
+                  const XmlEditorArea(),
                 ],
               ),
             ),
@@ -62,7 +94,13 @@ class SplitView extends StatelessWidget {
     return MultiSplitViewTheme(
         data: MultiSplitViewThemeData(
             dividerPainter: DividerPainters.grooved2(
-                color: Colors.grey[400]!, highlightedColor: Colors.red)),
+              color: Colors.grey[400]!,
+              highlightedColor: Colors.blue,
+              count: 11,
+              highlightedCount: 19,
+              thickness: 3,
+            ),
+        ),
         child: child);
   }
 }

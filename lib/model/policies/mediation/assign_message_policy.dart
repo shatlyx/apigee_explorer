@@ -20,12 +20,12 @@ class AssignMessagePolicy extends Policy {
 
   @override
   Set<String> fetchInputs() {
-    return {};
+    return {"request.header.authorization", "request.header.correlationId", "flow.input"};
   }
 
   @override
   Set<String> fetchOutputs() {
-    return {};
+    return {"flow.oauth.type", "flow.oauth.step", "flow.a.out"};
   }
 
   @override

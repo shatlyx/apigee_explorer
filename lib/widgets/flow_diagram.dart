@@ -45,7 +45,7 @@ class FlowDiagram extends StatelessWidget {
       tileColor: Colors.grey.shade100,
       title: EndpointTile(
         name: name,
-        verb: condition != null ? ConditionUtils.getVerb(condition!) : "ALL",
+        condition: condition,
       ),
       leading: phase == internal.Phase.response ? const Icon(Icons.arrow_upward) : const Icon(Icons.arrow_downward),
       trailing: Icon(Icons.more_vert),

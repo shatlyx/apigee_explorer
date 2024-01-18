@@ -91,6 +91,7 @@ class ParsingService {
       enabled: (rootElement.getAttribute("enabled") ?? "true") == "true",
       continueOnError: (rootElement.getAttribute("enabled") ?? "false") == "true",
       type: type,
+      resourceUrl: rootElement.getElement("ResourceURL")?.innerText
     );
   }
 
@@ -126,6 +127,29 @@ class ParsingService {
         );
   }
 
+  static List<FaultRule> extractFaultRuleList({required XmlElement root, required String elementName, required Map<String, Policy> policies}) {
+    return root.findElements(elementName)
+        .map((e) => mapFaultRule(e, policies))
+        .toList()
+    ;
+  }
+
+  static FaultRule mapFaultRule(XmlElement e, Map<String, Policy> policies) {
+    return FaultRule(
+      name: e.getAttribute("name") ?? '',
+      steps: extractSteps(root: e, policies: policies),
+      condition: e.findElements("Condition").map((e) => e.innerText).map((e) => ConditionUtils.parse(e)).firstOrNull
+    );
+  }
+
+  static DefaultFaultRule mapDefaultFaultRule(XmlElement e, Map<String, Policy> policies) {
+    return DefaultFaultRule(
+      name: e.getAttribute("name") ?? '',
+      steps: extractSteps(root: e, policies: policies),
+      alwaysEnforce: bool.tryParse(e.getElement("AlwaysEnforce")?.innerText ?? "false") ?? false,
+    );
+  }
+
   static List<FlowStep> extractSteps({XmlElement? root, required Map<String, Policy> policies}) {
     if (root == null) {
       return [];
@@ -148,5 +172,13 @@ class ParsingService {
 
   static List<Flow>? extractConditionalFlows({required XmlElement root, required Map<String, Policy> policies}) {
     return root.findElements("Flows").expand((e) => extractFlowList(root: e, elementName: "Flow", policies: policies)).cast<Flow>().toList();
+  }
+
+  static List<FaultRule> extractFaultRules({required XmlElement root, required Map<String, Policy> policies}) {
+    return root.findElements("FaultRules").expand((e) => extractFaultRuleList(root: e, elementName: "FaultRule", policies: policies)).cast<FaultRule>().toList();
+  }
+
+  static DefaultFaultRule? extractDefaultFaultRule({required XmlElement root, required Map<String, Policy> policies}) {
+    return root.findElements("DefaultFaultRule").map((e) => mapDefaultFaultRule(e, policies)).firstOrNull;
   }
 }

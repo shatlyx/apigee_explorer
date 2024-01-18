@@ -1,4 +1,6 @@
+import 'package:flutter/material.dart';
 import 'package:petitparser/petitparser.dart';
+import 'package:popover/popover.dart';
 
 class ConditionUtils {
 
@@ -74,6 +76,40 @@ class ConditionUtils {
       }
     }
     return null;
+  }
+
+  static Future<Object?> showTextPopover({required BuildContext context, required String text}) {
+    return showPopover(
+      context: context,
+      bodyBuilder: (context) => Padding(
+        padding: const EdgeInsets.all(8.0),
+        child: Container(
+          color: Colors.black,
+          child: SingleChildScrollView(
+            child: SelectableText(
+              text, style: const TextStyle(color: Colors.white),
+              showCursor: true,
+              cursorColor: Colors.yellow,
+              cursorWidth: 4,
+              contextMenuBuilder: (context, editableTextState) {
+                final TextEditingValue value = editableTextState.textEditingValue;
+                final List<ContextMenuButtonItem> buttonItems = editableTextState.contextMenuButtonItems;
+                return AdaptiveTextSelectionToolbar.buttonItems(
+                  anchors: editableTextState.contextMenuAnchors,
+                  buttonItems: buttonItems,
+                );
+              },
+            ),
+          ),
+        ),
+      ),
+      direction: PopoverDirection.bottom,
+      width: 700,
+      height: 400,
+      arrowHeight: 15,
+      arrowWidth: 30,
+      backgroundColor: Colors.black,
+    );
   }
 }
 
