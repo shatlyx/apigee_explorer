@@ -1,9 +1,9 @@
 import 'package:apigee_explorer/model/policies/policy.dart';
 import 'package:apigee_explorer/service/parsing_service.dart';
 import 'package:apigee_explorer/utils/constants.dart';
+import 'package:path/path.dart' as p;
 import 'package:petitparser/core.dart';
 import 'package:xml/xml.dart';
-import 'package:path/path.dart' as p;
 
 class FileRepresentation {
   String name;

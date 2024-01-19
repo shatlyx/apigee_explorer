@@ -1,8 +1,8 @@
 import 'dart:io';
-import 'package:apigee_explorer/exceptions/parsing_exceptions.dart';
-import 'package:path/path.dart' as p;
 
+import 'package:apigee_explorer/exceptions/parsing_exceptions.dart';
 import 'package:apigee_explorer/model/internal.dart';
+import 'package:path/path.dart' as p;
 
 class FilesService {
 

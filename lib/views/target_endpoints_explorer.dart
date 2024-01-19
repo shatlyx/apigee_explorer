@@ -1,14 +1,15 @@
 import 'package:apigee_explorer/model/internal.dart' as internal;
 import 'package:apigee_explorer/providers/internal_provider.dart';
-import 'package:apigee_explorer/utils/condition_utils.dart';
 import 'package:apigee_explorer/utils/constants.dart';
 import 'package:apigee_explorer/widgets/endpoint_tile.dart';
 import 'package:flutter/material.dart';
-import 'package:animated_tree_view/animated_tree_view.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_fancy_tree_view/flutter_fancy_tree_view.dart';
 import 'package:path/path.dart' as p;
+import 'package:provider/provider.dart';
 
+import '../model/tree_node.dart';
 import '../widgets/stage_tile.dart';
+import '../widgets/tree_tile.dart';
 
 class TargetEndpointsExplorer extends StatefulWidget {
 
@@ -22,9 +23,21 @@ class TargetEndpointsExplorer extends StatefulWidget {
 
 class _TargetEndpointsExplorerState extends State<TargetEndpointsExplorer> {
 
+  late final TreeController<TreeNode> treeController;
+
   @override
   void initState() {
     super.initState();
+    treeController = TreeController<TreeNode>(
+      roots: [],
+      childrenProvider: (TreeNode node) => node.children ?? [],
+    );
+  }
+
+  @override
+  void dispose() {
+    treeController.dispose();
+    super.dispose();
   }
 
   @override
@@ -32,80 +45,119 @@ class _TargetEndpointsExplorerState extends State<TargetEndpointsExplorer> {
     return Consumer<ApigeeProvider>(
       builder: (context, ref, child) {
         if (ref.targetEndpoints.isNotEmpty) {
-          var nodes = TreeNode.root();
-          for (internal.EndpointsRepresentation targetEndpoint in ref.targetEndpoints) {
-            var targetEndpointNode = TreeNode<internal.EndpointsRepresentation>(key: p.basenameWithoutExtension(targetEndpoint.name), data: targetEndpoint)
-              ..add(TreeNode<internal.Flow>(key: preFlow, data: targetEndpoint.preFlow));
-            if (targetEndpoint.flows != null && targetEndpoint.flows!.isNotEmpty) {
-              for (internal.Flow flow in targetEndpoint.flows!) {
-                targetEndpointNode.add(TreeNode<internal.Flow>(
-                  key: flow.name,
-                  data: flow,
-                ));
-              }
-            }
-            targetEndpointNode
-              ..add(TreeNode(key: postFlow, data: targetEndpoint.postFlow))
-              ..add(TreeNode(key: postClientFlow, data: targetEndpoint.postClientFlow))
-                ;
-            nodes.add(targetEndpointNode);
+          List<TreeNode> nodes = [];
+          if (treeController.roots.isEmpty) {
+            _buildNodes(ref, context, nodes);
+            treeController.roots = nodes;
           }
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.start,
-            children: [
-              const Padding(
-                padding: EdgeInsets.all(8.0),
-                child: Text('Target Endpoints', style: TextStyle(fontWeight: FontWeight.bold),),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: TreeView.simple(
-                  showRootNode: false,
-                  expansionIndicatorBuilder: (context, node) =>
-                    ChevronIndicator.rightDown(
-                      alignment: Alignment.centerRight,
-                      tree: node,
-                      color: Colors.blue,
-                      padding: const EdgeInsets.all(8),
-                    ),
-                  indentation: const Indentation(style: IndentStyle.roundJoint),
+          return InteractiveViewer(
+            constrained: false,
+            child: Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Container(
+                constraints: const BoxConstraints(maxWidth: 700),
+                child: TreeView<TreeNode>(
                   shrinkWrap: true,
-                  tree: nodes,
-                  builder: (context, node) {
-                    if (node.data is internal.Flow) {
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4.0),
-                        child: EndpointTile(
-                          selected: ref.selectedTargetEndpointFlow != null && ref.selectedTargetEndpointFlow == node.data,
-                          onSelect: () => ref.selectTargetEndpointFlow(targetEndpointName: node.parent!.key, flowName: node.key),
-                          name: node.key,
-                          condition: (node.data as internal.Flow).condition,
-                        ),
-                      );
-                    }
-                    if (node.data is internal.EndpointsRepresentation) {
-                      return Padding(
-                        padding: const EdgeInsets.all(3.0),
-                        child: StageTile(
-                          name: node.key,
-                          description: (node.data as internal.EndpointsRepresentation).description,
-                          onEdit: () => Provider.of<ApigeeProvider>(context, listen: false).editFile(
-                              name: (node.data as internal.EndpointsRepresentation).name,
-                              type: internal.FileRepresentationType.targetEndpointDescriptor
-                          ),
-                        ),
-                      );
-                    }
-                    return ListTile(title: Text(node.key),);
+                  treeController: treeController,
+                  // Provide a widget builder callback to map your tree nodes into widgets.
+                  nodeBuilder: (BuildContext context, TreeEntry<TreeNode> entry) {
+                    return TreeTile(
+                      key: ValueKey(entry.node.key),
+                      entry: entry,
+                      // Add a callback to toggle the expansion state of this node.
+                      onTap: () => treeController.toggleExpansion(entry.node),
+                    );
                   },
                 ),
               ),
-            ],
+            ),
           );
         }
         return Container();
       }
     );
+  }
+
+  void _buildNodes(ApigeeProvider ref, BuildContext context, List<TreeNode<dynamic>> nodes) {
+
+    for (internal.EndpointsRepresentation targetEndpoint in ref.targetEndpoints) {
+      var proxyEndpointNode = TreeNode<internal.EndpointsRepresentation>(
+        key: p.basenameWithoutExtension(targetEndpoint.name),
+        data: targetEndpoint,
+        widget: Padding(
+          padding: const EdgeInsets.all(3.0),
+          child: StageTile(
+            name: p.basenameWithoutExtension(targetEndpoint.name),
+            description: targetEndpoint.description,
+            onEdit: () => Provider.of<ApigeeProvider>(context, listen: false).editFile(
+                name: targetEndpoint.name,
+                type: internal.FileRepresentationType.targetEndpointDescriptor
+            ),
+          ),
+        )
+      )
+        ..addChild(child: TreeNode<internal.Flow>(
+          key: preFlow,
+          data: targetEndpoint.preFlow,
+          widget: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4.0),
+            child: EndpointTile(
+              selected: ref.selectedTargetEndpointFlow != null && ref.selectedTargetEndpointFlow == targetEndpoint.preFlow,
+              onSelect: () => ref.selectTargetEndpointFlow(targetEndpointName: p.basenameWithoutExtension(targetEndpoint.name), flowName: preFlow),
+              name: preFlow,
+              condition: targetEndpoint.preFlow!.condition,
+            ),
+          )
+        )
+        );
+      if (targetEndpoint.flows != null && targetEndpoint.flows!.isNotEmpty) {
+        for (internal.Flow flow in targetEndpoint.flows!) {
+          proxyEndpointNode.addChild(child: TreeNode<internal.Flow>(
+            key: flow.name,
+            data: flow,
+            widget: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4.0),
+              child: EndpointTile(
+                selected: ref.selectedTargetEndpointFlow != null && ref.selectedTargetEndpointFlow == flow,
+                onSelect: () => ref.selectTargetEndpointFlow(targetEndpointName: p.basenameWithoutExtension(targetEndpoint.name), flowName: flow.name),
+                name: flow.name,
+                condition: flow.condition,
+              ),
+            )
+          ));
+        }
+      }
+      proxyEndpointNode
+        ..addChild(
+            child: TreeNode<internal.Flow>(
+              key: postFlow,
+              data: targetEndpoint.postFlow,
+              widget: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4.0),
+                child: EndpointTile(
+                  selected: ref.selectedTargetEndpointFlow != null && ref.selectedTargetEndpointFlow == targetEndpoint.postFlow,
+                  onSelect: () => ref.selectTargetEndpointFlow(targetEndpointName: p.basenameWithoutExtension(targetEndpoint.name), flowName: postFlow),
+                  name: postFlow,
+                  condition: targetEndpoint.postFlow!.condition,
+                ),
+              )
+            ))
+        ..addChild(
+            child: TreeNode<internal.Flow>(
+              key: postClientFlow,
+              data: targetEndpoint.postClientFlow,
+                widget: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4.0),
+                  child: EndpointTile(
+                    selected: ref.selectedTargetEndpointFlow != null && ref.selectedTargetEndpointFlow == targetEndpoint.postClientFlow,
+                    onSelect: () => ref.selectTargetEndpointFlow(targetEndpointName: p.basenameWithoutExtension(targetEndpoint.name), flowName: postClientFlow),
+                    name: postClientFlow,
+                    condition: targetEndpoint.postClientFlow!.condition,
+                  ),
+                )
+            ))
+          ;
+      nodes.add(proxyEndpointNode);
+    }
   }
 }

@@ -2,7 +2,6 @@ import 'package:apigee_explorer/model/internal.dart';
 import 'package:apigee_explorer/model/policies/extension/javascript_policy.dart';
 import 'package:apigee_explorer/model/policies/mediation/assign_message_policy.dart';
 import 'package:apigee_explorer/model/policies/unkown_policy.dart';
-import 'package:xml/xml.dart';
 
 abstract class Policy {
   XmlFileIdentification getIdentifyXmlFileIdentification();

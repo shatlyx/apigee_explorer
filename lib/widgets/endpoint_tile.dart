@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:petitparser/src/core/result.dart';
 
 import '../utils/condition_utils.dart';
@@ -17,10 +16,13 @@ class EndpointTile extends StatelessWidget {
     String verb = _resolveVerb();
     return InkWell(
       child: Container(
+        /*
+        //Need to fix Treeview state on state changes first
         decoration: BoxDecoration(
           color: selected ? Colors.grey : null,
           borderRadius: const BorderRadius.all(Radius.circular(20))
         ),
+         */
         child: Padding(
           padding: const EdgeInsets.all(8.0),
           child: Wrap(

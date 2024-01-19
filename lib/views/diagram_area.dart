@@ -1,12 +1,9 @@
 
-import 'dart:ui';
-
 import 'package:apigee_explorer/model/internal.dart';
 import 'package:apigee_explorer/providers/internal_provider.dart';
 import 'package:apigee_explorer/utils/constants.dart';
 import 'package:apigee_explorer/widgets/fault_rule_diagram.dart';
 import 'package:apigee_explorer/widgets/flow_diagram.dart';
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';

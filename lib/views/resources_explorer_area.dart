@@ -1,15 +1,11 @@
 import 'package:apigee_explorer/model/internal.dart' as internal;
+import 'package:apigee_explorer/model/tree_node.dart';
 import 'package:apigee_explorer/providers/internal_provider.dart';
-import 'package:apigee_explorer/utils/condition_utils.dart';
-import 'package:apigee_explorer/utils/constants.dart';
-import 'package:apigee_explorer/widgets/endpoint_tile.dart';
+import 'package:apigee_explorer/widgets/tree_tile.dart';
 import 'package:flutter/material.dart';
-import 'package:animated_tree_view/animated_tree_view.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_fancy_tree_view/flutter_fancy_tree_view.dart';
 import 'package:path/path.dart' as p;
-
-import '../model/policies/policy.dart';
-import '../widgets/stage_tile.dart';
+import 'package:provider/provider.dart';
 
 class ResourcesExplorerArea extends StatefulWidget {
 
@@ -23,9 +19,21 @@ class ResourcesExplorerArea extends StatefulWidget {
 
 class _ResourcesExplorerAreaState extends State<ResourcesExplorerArea> {
 
+  late final TreeController<TreeNode> treeController;
+
   @override
   void initState() {
     super.initState();
+    treeController = TreeController<TreeNode>(
+      roots: [],
+      childrenProvider: (TreeNode node) => node.children ?? [],
+    );
+  }
+
+  @override
+  void dispose() {
+    treeController.dispose();
+    super.dispose();
   }
 
   @override
@@ -34,59 +42,54 @@ class _ResourcesExplorerAreaState extends State<ResourcesExplorerArea> {
       builder: (context, ref, child) {
         var resources = ref.resources;
         if (resources.isNotEmpty) {
-          var nodes = TreeNode.root();
+          List<TreeNode> nodes = [];
           for (var entry in resources.entries) {
-            var typeNode = TreeNode<internal.FileType>(key: entry.key.label, data: entry.key);
-            if (entry.value.isNotEmpty) {
-              for (internal.FileRepresentation file in entry.value) {
-                typeNode.add(TreeNode<internal.FileRepresentation>(
-                  key: p.basenameWithoutExtension(file.name),
-                  data: file,
-                ));
-              }
-            }
+            var typeNode = TreeNode<internal.FileType>(
+              key: entry.key.label,
+              data: entry.key,
+              widget: Flexible(
+                child: Text(entry.key.label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold,),),
+              ),
+              children: entry.value.map((e) => TreeNode<internal.FileRepresentation>(
+                key: p.basename(e.name),
+                data: e,
+                widget: Flexible(
+                  child: InkWell(
+                      onTap: () => ref.editFile(
+                          name: p.basenameWithoutExtension(e.name),
+                          type: e.fileRepresentationType
+                      ),
+                      child: Text(p.basename(e.name), style: const TextStyle(fontSize: 12,),),
+                  ),
+                )
+              )).toList()
+            );
             nodes.add(typeNode);
           }
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: TreeView.simple(
-                  showRootNode: false,
-                  expansionIndicatorBuilder: (context, node) =>
-                    ChevronIndicator.rightDown(
-                      alignment: Alignment.centerRight,
-                      tree: node,
-                      color: Colors.blue,
-                      padding: const EdgeInsets.all(8),
-                    ),
-                  indentation: const Indentation(style: IndentStyle.roundJoint),
+          if (treeController.roots.isEmpty) {
+            treeController.roots = nodes;
+          }
+          return InteractiveViewer(
+            constrained: false,
+            child: Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Container(
+                constraints: const BoxConstraints(maxWidth: 700),
+                child: TreeView<TreeNode>(
                   shrinkWrap: true,
-                  tree: nodes,
-                  builder: (context, node) {
-                    if (node.data is internal.FileType) {
-                      return ListTile(title: Text(node.key, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),),);
-                    }
-                    if (node.data is internal.FileRepresentation && node.key != internal.FileType.javaResource.label) {
-                      return InkWell(
-                          onTap: () => ref.editFile(
-                              name: p.basenameWithoutExtension((node.data as internal.FileRepresentation).name),
-                              type: (node.data as internal.FileRepresentation).fileRepresentationType
-                          ),
-                          child: ListTile(
-                            title: Text(node.key, style: const TextStyle(fontSize: 12),),
-                          )
-                      );
-                    }
-                    return ListTile(
-                      title: Text(node.key, style: const TextStyle(fontSize: 12),),
+                  treeController: treeController,
+                  // Provide a widget builder callback to map your tree nodes into widgets.
+                  nodeBuilder: (BuildContext context, TreeEntry<TreeNode> entry) {
+                    return TreeTile(
+                      key: ValueKey(entry.node.key),
+                      entry: entry,
+                      // Add a callback to toggle the expansion state of this node.
+                      onTap: () => treeController.toggleExpansion(entry.node),
                     );
                   },
                 ),
               ),
-            ],
+            ),
           );
         }
         return Container();

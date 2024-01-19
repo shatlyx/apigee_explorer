@@ -1,15 +1,14 @@
 import 'package:apigee_explorer/model/internal.dart' as internal;
 import 'package:apigee_explorer/providers/internal_provider.dart';
-import 'package:apigee_explorer/utils/condition_utils.dart';
-import 'package:apigee_explorer/utils/constants.dart';
 import 'package:apigee_explorer/widgets/endpoint_tile.dart';
 import 'package:flutter/material.dart';
-import 'package:animated_tree_view/animated_tree_view.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_fancy_tree_view/flutter_fancy_tree_view.dart';
 import 'package:path/path.dart' as p;
+import 'package:provider/provider.dart';
 
 import '../model/policies/policy.dart';
-import '../widgets/stage_tile.dart';
+import '../model/tree_node.dart';
+import '../widgets/tree_tile.dart';
 
 class PoliciesExplorerArea extends StatefulWidget {
 
@@ -23,9 +22,21 @@ class PoliciesExplorerArea extends StatefulWidget {
 
 class _PoliciesExplorerAreaState extends State<PoliciesExplorerArea> {
 
+  late final TreeController<TreeNode> treeController;
+
   @override
   void initState() {
     super.initState();
+    treeController = TreeController<TreeNode>(
+      roots: [],
+      childrenProvider: (TreeNode node) => node.children ?? [],
+    );
+  }
+
+  @override
+  void dispose() {
+    treeController.dispose();
+    super.dispose();
   }
 
   @override
@@ -34,82 +45,69 @@ class _PoliciesExplorerAreaState extends State<PoliciesExplorerArea> {
       builder: (context, ref, child) {
         var policies = ref.getPoliciesByFileType();
         if (policies.isNotEmpty) {
-          var nodes = TreeNode.root();
-          for (var entry in policies.entries) {
-            var typeNode = TreeNode<internal.FileType>(key: entry.key.label, data: entry.key);
-            if (entry.value.isNotEmpty) {
-              for (Policy policy in entry.value) {
-                var policyNode = TreeNode<Policy>(
-                  key: p.basenameWithoutExtension(policy.getIdentifyXmlFileIdentification().name),
-                  data: policy,
-                );
-                //Add Flows
-                _addPolicyFlowsUsage(ref, policy, policyNode);
-                _addInputs(policy, policyNode);
-                _addOutputs(policy, policyNode);
-                typeNode.add(policyNode);
-              }
-            }
-            nodes.add(typeNode);
+          List<TreeNode> nodes = [];
+          if (treeController.roots.isEmpty) {
+            _buildData(policies, ref, nodes);
+            treeController.roots = nodes;
           }
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: TreeView.simple(
-                  showRootNode: false,
-                  expansionIndicatorBuilder: (context, node) =>
-                    ChevronIndicator.rightDown(
-                      alignment: Alignment.centerRight,
-                      tree: node,
-                      color: Colors.blue,
-                      padding: const EdgeInsets.all(8),
-                    ),
-                  indentation: const Indentation(style: IndentStyle.roundJoint),
+          return InteractiveViewer(
+            constrained: false,
+            child: Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Container(
+                constraints: const BoxConstraints(maxWidth: 700),
+                child: TreeView<TreeNode>(
                   shrinkWrap: true,
-                  tree: nodes,
-                  builder: (context, node) {
-                    if (node.data is internal.FileType) {
-                      return ListTile(title: Text(node.key, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),),);
-                    }
-                    if (node.data is Policy) {
-                      return InkWell(
-                          onTap: () {
-                            var file = (node.data as Policy).getIdentifyXmlFileIdentification();
-                            ref.editFile(name: file.name);
-                          },
-                          child: ListTile(
-                            title: Text(node.key, style: const TextStyle(fontSize: 12),),
-                          )
-                      );
-                    }
-                    if (node.data is internal.Flow) {
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4.0),
-                        child: EndpointTile(
-                          selected: ref.selectedProxyEndpointFlow != null && ref.selectedProxyEndpointFlow == node.data,
-                          onSelect: () => ref.selectProxyEndpointFlow(proxyEndpointName: node.parent!.key, flowName: node.key),
-                          name: node.key,
-                          condition: (node.data as internal.Flow).condition,
-                        ),
-                      );
-                    }
-                    return ListTile(
-                      title: Tooltip(
-                        message: node.key.replaceAll('\[dot\]', '.'),
-                        child: Text(node.key, style: const TextStyle(fontSize: 12),)),
+                  treeController: treeController,
+                  // Provide a widget builder callback to map your tree nodes into widgets.
+                  nodeBuilder: (BuildContext context, TreeEntry<TreeNode> entry) {
+                    return TreeTile(
+                      key: ValueKey(entry.node.key),
+                      entry: entry,
+                      // Add a callback to toggle the expansion state of this node.
+                      onTap: () => treeController.toggleExpansion(entry.node),
                     );
                   },
                 ),
               ),
-            ],
+            ),
           );
         }
         return Container();
       }
     );
+  }
+
+  void _buildData(Map<internal.FileType, List<Policy>> policies, ApigeeProvider ref, List<TreeNode<dynamic>> nodes) {
+    for (var entry in policies.entries) {
+      var typeNode = TreeNode<internal.FileType>(
+          key: entry.key.label,
+          data: entry.key,
+          widget: Text(entry.key.label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),),
+      );
+      if (entry.value.isNotEmpty) {
+        for (Policy policy in entry.value) {
+          var xmlIdentification = policy.getIdentifyXmlFileIdentification();
+          var policyNode = TreeNode<Policy>(
+            key: p.basenameWithoutExtension(xmlIdentification.name),
+            data: policy,
+            widget: InkWell(
+                onTap: () {
+                  var file = policy.getIdentifyXmlFileIdentification();
+                  ref.editFile(name: file.name);
+                },
+                child: Text(xmlIdentification.name, style: const TextStyle(fontSize: 12),),
+            ),
+          );
+          //Add Flows
+          _addPolicyFlowsUsage(ref, policy, policyNode);
+          _addInputs(policy, policyNode);
+          _addOutputs(policy, policyNode);
+          typeNode.addChild(child: policyNode);
+        }
+      }
+      nodes.add(typeNode);
+    }
   }
 
   void _addOutputs(Policy policy, TreeNode<Policy> policyNode) {
@@ -118,11 +116,16 @@ class _PoliciesExplorerAreaState extends State<PoliciesExplorerArea> {
       var outputNode = TreeNode<String>(
         key: "Outputs",
         data: "Outputs",
+        widget: const Text("Outputs", style: TextStyle(fontWeight: FontWeight.w500),)
       );
       for (var output in outputs.toList()..sort()) {
-        outputNode.add(TreeNode<String>(key: _formatNodeKey(output), data: output));
+        outputNode.addChild(child: TreeNode<String>(
+            key: output,
+            data: output,
+            widget: Text(output, style: const TextStyle(fontWeight: FontWeight.w500),)
+        ));
       }
-      policyNode.add(outputNode);
+      policyNode.addChild(child: outputNode);
     }
   }
 
@@ -132,11 +135,16 @@ class _PoliciesExplorerAreaState extends State<PoliciesExplorerArea> {
       var inputNode = TreeNode<String>(
         key: "Inputs",
         data: "Inputs",
+        widget: const Text("Inputs", style: TextStyle(fontWeight: FontWeight.w500),)
       );
       for (var input in inputs.toList()..sort()) {
-        inputNode.add(TreeNode<String>(key: _formatNodeKey(input), data: input));
+        inputNode.addChild(child: TreeNode<String>(
+          key: input,
+          data: input,
+          widget: Text(input, style: const TextStyle(fontWeight: FontWeight.w500),)
+        ));
       }
-      policyNode.add(inputNode);
+      policyNode.addChild(child: inputNode);
     }
   }
 
@@ -146,25 +154,33 @@ class _PoliciesExplorerAreaState extends State<PoliciesExplorerArea> {
       var usageNode = TreeNode<String>(
         key: "Used in",
         data: "Used in",
+        widget: const Text("Used in"),
       );
       for (var flowUsage in flowsUsage.entries) {
         var flowsUsageProxyEndpointNode = TreeNode<String>(
           key: flowUsage.key,
           data: flowUsage.key,
+          widget: Text(flowUsage.key),
         );
         for (var flow in flowUsage.value) {
-          flowsUsageProxyEndpointNode.add(TreeNode<internal.Flow>(
+          flowsUsageProxyEndpointNode.addChild(child: TreeNode<internal.Flow>(
             key: flow.flow.name,
             data: flow.flow,
+            widget: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4.0),
+              child: EndpointTile(
+                selected: ref.selectedProxyEndpointFlow != null && ref.selectedProxyEndpointFlow == flow.flow,
+                onSelect: () => ref.selectProxyEndpointFlow(proxyEndpointName: flowUsage.key, flowName: flow.flow.name),
+                name: flow.flow.name,
+                condition: flow.flow.condition,
+              ),
+            )
           ));
         }
-        usageNode.add(flowsUsageProxyEndpointNode);
+        usageNode.addChild(child: flowsUsageProxyEndpointNode);
       }
-      policyNode.add(usageNode);
+      policyNode.addChild(child: usageNode);
     }
   }
 
-  _formatNodeKey(String input) {
-    return input.replaceAll("\.", "[dot]");
-  }
 }

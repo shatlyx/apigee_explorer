@@ -1,11 +1,8 @@
+import 'package:apigee_explorer/model/internal.dart' as internal;
 import 'package:apigee_explorer/widgets/diagram_step.dart';
 import 'package:apigee_explorer/widgets/endpoint_tile.dart';
 import 'package:flutter/material.dart';
-import 'package:apigee_explorer/model/internal.dart' as internal;
-import 'package:apigee_explorer/utils/constants.dart';
 import 'package:petitparser/petitparser.dart';
-
-import '../utils/condition_utils.dart';
 
 class FaultRuleDiagram extends StatelessWidget {
   final String name;

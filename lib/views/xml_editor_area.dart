@@ -2,8 +2,8 @@ import 'package:apigee_explorer/model/internal.dart';
 import 'package:apigee_explorer/providers/internal_provider.dart';
 import 'package:apigee_explorer/widgets/code_editor.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 import 'package:path/path.dart' as p;
+import 'package:provider/provider.dart';
 
 class XmlEditorArea extends StatefulWidget {
 

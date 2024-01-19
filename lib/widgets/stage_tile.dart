@@ -1,6 +1,4 @@
-import 'package:apigee_explorer/providers/internal_provider.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
 class StageTile extends StatelessWidget {
   final String name;
@@ -10,10 +8,15 @@ class StageTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListTile(
-      tileColor: Colors.grey.shade100,
-      title: Wrap(
+    return Container(
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
+          Tooltip(
+            message: description != null && description!.isNotEmpty ? description! : 'No description available',
+            child: const Icon(Icons.info),
+          ),
+          const SizedBox(width: 6,),
           Text(name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),),
           const SizedBox(width: 6,),
           InkWell(
@@ -21,10 +24,6 @@ class StageTile extends StatelessWidget {
             child: const Icon(Icons.edit, size: 18, color: Colors.blue,),
           ),
         ],
-      ),
-      leading: Tooltip(
-        message: description != null && description!.isNotEmpty ? description! : 'No description available',
-        child: const Icon(Icons.info),
       ),
     );
   }

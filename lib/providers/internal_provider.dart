@@ -1,8 +1,8 @@
 import 'package:apigee_explorer/model/internal.dart' as internal;
 import 'package:apigee_explorer/utils/constants.dart';
+import "package:collection/collection.dart";
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
-import "package:collection/collection.dart";
 
 import '../model/policies/policy.dart';
 import '../service/files_service.dart';

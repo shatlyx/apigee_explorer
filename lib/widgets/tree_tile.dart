@@ -28,6 +28,7 @@ class TreeTile extends StatelessWidget {
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.start,
         children: [
           // Add a widget to indicate the expansion state of this node.
           // See also: ExpandIcon.
