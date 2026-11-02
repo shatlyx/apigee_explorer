@@ -32,6 +32,8 @@ public final class SourceCompactor {
     private static final Pattern ANNOTATION = Pattern.compile(
             "<((?:[\\w-]+:)?(?:annotation|documentation))\\b[^>]*?(?:/>|>.*?</\\1\\s*>)", Pattern.DOTALL);
 
+    private static final Pattern MANIFEST_VERSION = Pattern.compile("\\s+version=\"[^\"]*\"");
+
     private SourceCompactor() {
     }
 
@@ -43,7 +45,10 @@ public final class SourceCompactor {
         String path = file.path().toLowerCase(Locale.ROOT);
         String extension = path.substring(path.lastIndexOf('.') + 1);
         String content = switch (extension) {
-            case "xml", "xsl", "xslt" -> xml(file.content());
+            // the manifest of an export holds a SHA-512 per resource: the names are what a reader needs
+            case "xml" -> path.endsWith("manifests/manifest.xml")
+                    ? MANIFEST_VERSION.matcher(xml(file.content())).replaceAll("") : xml(file.content());
+            case "xsl", "xslt" -> xml(file.content());
             case "xsd", "wsdl" -> xml(ANNOTATION.matcher(file.content()).replaceAll(""));
             case "json" -> json(file.content());
             case "js" -> library(path, file.content()) ? outline(file.content()) : lines(file.content());

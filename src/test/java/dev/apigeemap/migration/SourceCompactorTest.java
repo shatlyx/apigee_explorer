@@ -51,6 +51,21 @@ class SourceCompactorTest {
     }
 
     @Test
+    void dropsTheHashesOfTheManifest() {
+        String hash = "SHA-512:" + "ab12".repeat(32);
+        ProxyDocs.SourceFile manifest = new ProxyDocs.SourceFile("orders-api", "apiproxy/manifests/manifest.xml", """
+                <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                <Manifest name="manifest">
+                    <Policies>
+                        <VersionInfo resourceName="AM-Set" version="%s"/>
+                    </Policies>
+                </Manifest>
+                """.formatted(hash));
+        assertEquals("<Manifest name=\"manifest\">\n<Policies>\n<VersionInfo resourceName=\"AM-Set\"/>\n</Policies>\n"
+                + "</Manifest>", SourceCompactor.compact(manifest).content());
+    }
+
+    @Test
     void dropsTheSpacesOfJsonOutsideStrings() {
         assertEquals("{\"a b\":\"x \\\" y\",\"n\":1.50,\"l\":[1,2]}",
                 SourceCompactor.json("{\n  \"a b\" : \"x \\\" y\",\n  \"n\": 1.50,\n  \"l\": [ 1, 2 ]\n}\n"));
