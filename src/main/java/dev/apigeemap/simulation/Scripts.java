@@ -8,6 +8,11 @@ import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptableObject;
 import org.mozilla.javascript.Undefined;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Base64;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.function.BiFunction;
 
@@ -60,6 +65,20 @@ final class Scripts {
             context.proxyRequest = context.targetRequest = __message('request');
             context.proxyResponse = context.targetResponse = __message('response');
             var request = context.proxyRequest, response = context.proxyResponse;
+            function __hash(algorithm) {
+              var text = '';
+              return {
+                update: function (value) { text += value; },
+                digest: function () { return __hex(algorithm, text); },
+                digest64: function () { return __base64(algorithm, text); }
+              };
+            }
+            var crypto = {
+              getMD5: function () { return __hash('MD5'); },
+              getSHA1: function () { return __hash('SHA-1'); },
+              getSHA256: function () { return __hash('SHA-256'); },
+              getSHA512: function () { return __hash('SHA-512'); }
+            };
             """;
 
     private Scripts() {
@@ -87,6 +106,8 @@ final class Scripts {
                 return null;
             });
             function(scope, "print", (name, value) -> null);
+            function(scope, "__hex", (algorithm, text) -> HexFormat.of().formatHex(digest(algorithm, text)));
+            function(scope, "__base64", (algorithm, text) -> Base64.getEncoder().encodeToString(digest(algorithm, text)));
             context.evaluateString(scope, MESSAGES, "context", 1, null);
             for (String source : sources) context.evaluateString(scope, source, "script", 1, null);
             return null;
@@ -97,6 +118,14 @@ final class Scripts {
             throw e;
         } finally {
             Context.exit();
+        }
+    }
+
+    private static byte[] digest(String algorithm, String text) {
+        try {
+            return MessageDigest.getInstance(algorithm).digest(text.getBytes(StandardCharsets.UTF_8));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
         }
     }
 

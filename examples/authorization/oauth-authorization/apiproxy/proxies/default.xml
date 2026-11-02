@@ -285,27 +285,35 @@
         <FaultRule name="invalid-client">
             <Condition>(fault.name = "InvalidClientIdentifier") or (fault.name = "InvalidApiKey") or (fault.name = "invalid_client") or (fault.name = "InvalidBasicAuthenticationSource")</Condition>
             <Step><Name>AM-Error-Invalid-Client</Name></Step>
+            <Step><Name>FC-Cors</Name></Step>
         </FaultRule>
         <FaultRule name="invalid-token">
             <Condition>(fault.name = "invalid_access_token") or (fault.name = "access_token_expired") or (fault.name = "InvalidAccessToken")</Condition>
             <Step><Name>AM-Error-Invalid-Token</Name></Step>
+            <Step><Name>FC-Cors</Name></Step>
         </FaultRule>
         <FaultRule name="invalid-grant">
             <Condition>(fault.name = "invalid_grant") or (fault.name = "InvalidAuthorizationCode") or (fault.name = "ExpiredAuthorizationCode") or (fault.name = "InvalidRefreshToken")</Condition>
             <Step><Name>AM-Error-Invalid-Grant</Name></Step>
+            <Step><Name>FC-Cors</Name></Step>
         </FaultRule>
         <FaultRule name="rate-limited">
             <Condition>(fault.name = "QuotaViolation") or (fault.name = "SpikeArrestViolation") or (fault.name = "ConcurrentRatelimtViolation")</Condition>
             <Step><Name>AM-Error-Too-Many</Name></Step>
+            <Step><Name>FC-Cors</Name></Step>
         </FaultRule>
         <FaultRule name="rejected-payload">
             <Condition>(fault.name = "ThreatDetected") or (fault.name = "ExecutionFailed") or (fault.name = "OASValidationFailed")</Condition>
             <Step><Name>AM-Error-Invalid-Request</Name></Step>
+            <Step><Name>FC-Cors</Name></Step>
         </FaultRule>
     </FaultRules>
     <DefaultFaultRule name="server-error">
-        <AlwaysEnforce>true</AlwaysEnforce>
-        <Step><Name>AM-Error-Default</Name></Step>
+        <AlwaysEnforce>false</AlwaysEnforce>
+        <Step>
+            <Name>AM-Error-Default</Name>
+            <Condition>fault.name != "RaiseFault"</Condition>
+        </Step>
         <Step><Name>FC-Cors</Name></Step>
     </DefaultFaultRule>
     <HTTPProxyConnection>

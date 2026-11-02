@@ -84,7 +84,8 @@ public final class Simulator {
                 response(target, targetFlow);
             } else {
                 exchange.current = "response";
-                exchange.message("response").status = "200";
+                Exchange.Message response = exchange.message("response");
+                if (response.status == null) response.status = "200";
             }
             faultEndpoint = proxy;
             response(proxy, proxyFlow);

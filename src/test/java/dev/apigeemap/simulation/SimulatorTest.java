@@ -363,6 +363,29 @@ class SimulatorTest {
     }
 
     @Test
+    void playsTheAuthorizeExampleUpToTheRedirect() throws Exception {
+        Path examples = Path.of("examples", "authorization").toAbsolutePath();
+        var report = new BundleAnalyzer(SharedFlowRepository.scan(List.of(examples.resolve("sharedflows"))))
+                .analyze(BundleLocator.locate(examples.resolve("oauth-authorization")));
+        String path = "/oauth/v2/authorize?response_type=code&client_id=demo-app"
+                + "&redirect_uri=https://app.example.com/callback&state=xyz&code_challenge=abc&code_challenge_method=S256";
+
+        Result result = Simulator.run(report, new Input("GET", path, Map.of("Host", "api.example.com"), null, "200", null,
+                Map.of("idp.authorize_url", "http://localhost:8766/authorize",
+                        "idp.callback_url", "https://api.example.com/oauth/v2/callback",
+                        "private.idp.client_id", "broker-client",
+                        "AccessEntity.AE-Authorize-App.content",
+                        "<App><CallbackUrl>https://app.example.com/callback</CallbackUrl></App>"),
+                Set.of(), Map.of()));
+
+        assertNull(result.fault(), () -> result.toString());
+        assertEquals("302", result.response().status(), "a proxy with no target keeps the status it set");
+        String location = result.response().headers().get("Location");
+        assertTrue(location.startsWith("http://localhost:8766/authorize?response_type=code&client_id=broker-client"), location);
+        assertTrue(location.matches(".*&state=[0-9a-f]{64}&nonce=[0-9a-f]{64}"), "crypto gives a SHA-256 in hex: " + location);
+    }
+
+    @Test
     void playsTheExampleWithItsSharedFlows() throws Exception {
         Path examples = Path.of("examples").toAbsolutePath();
         var report = new BundleAnalyzer(SharedFlowRepository.scan(List.of(examples.resolve("sharedflows"))))
