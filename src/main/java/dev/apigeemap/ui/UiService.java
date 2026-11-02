@@ -13,7 +13,9 @@ import dev.apigeemap.migration.MigrationReport;
 import dev.apigeemap.migration.Migrator;
 import dev.apigeemap.migration.PortContext;
 import dev.apigeemap.migration.ProxyDocs;
+import dev.apigeemap.migration.FlowSummaries;
 import dev.apigeemap.migration.ProxyProfile;
+import dev.apigeemap.migration.SourceCompactor;
 import dev.apigeemap.migration.TestExports;
 import dev.apigeemap.migration.TestPlans;
 import dev.apigeemap.migration.TestTargets;
@@ -142,6 +144,7 @@ final class UiService {
     private final ScriptReviews reviews;
     private final ProxyDocs docs;
     private final TestPlans plans;
+    private final FlowSummaries summaries;
     private final ProxyStats stats;
     private final Path services;
     private final TokenStore token = new TokenStore();
@@ -161,6 +164,7 @@ final class UiService {
         this.reviews = ScriptReviews.at(historyRoot.toAbsolutePath().resolveSibling("reviews"));
         this.docs = ProxyDocs.at(historyRoot.toAbsolutePath().resolveSibling("docs"));
         this.plans = TestPlans.at(historyRoot.toAbsolutePath().resolveSibling("tests"));
+        this.summaries = FlowSummaries.at(historyRoot.toAbsolutePath().resolveSibling("summaries"));
         this.stats = ProxyStats.at(historyRoot.toAbsolutePath().resolveSibling("stats.json"));
         this.services = historyRoot.toAbsolutePath().resolveSibling("services");
         this.settings = Settings.load(settingsFile);
@@ -411,14 +415,15 @@ final class UiService {
     private Map<String, Object> writeDocumentation(String id) throws IOException {
         BundleReport analysis = analyze(settings(), id);
         List<ProxyDocs.SourceFile> files = ProxyDocs.files(analysis);
-        if (files.stream().mapToLong(f -> f.content().length()).sum() > MAX_DOCUMENTED) {
+        List<ProxyDocs.SourceFile> sent = sent(analysis, files);
+        if (sent.stream().mapToLong(f -> f.content().length()).sum() > MAX_DOCUMENTED) {
             throw new UiException(413, "This proxy is too large to be documented at once");
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("proxy", analysis.name());
         body.put("bundles", FixContext.bundles(analysis).values().stream()
                 .map(b -> Map.of("name", b.name(), "type", b.type().label())).toList());
-        body.put("files", files);
+        body.put("files", sent);
 
         Object answer;
         try {
@@ -431,6 +436,16 @@ final class UiService {
         ProxyDocs.Doc doc = answer instanceof Map<?, ?> reply ? ProxyDocs.doc(reply) : null;
         if (doc == null) return Map.of("error", BackendClient.UNAVAILABLE);
         return documentation(docs.put(analysis.name(), ProxyDocs.fingerprint(files), doc), true);
+    }
+
+    /**
+     * The files of the proxy as sent to be documented or planned: compacted, and each large shared flow as its
+     * summary, which the backend writes first when it has none for the flow as it is.
+     */
+    private List<ProxyDocs.SourceFile> sent(BundleReport analysis, List<ProxyDocs.SourceFile> files) {
+        return summaries.substitute(analysis.name(), SourceCompactor.compact(files),
+                body -> new BackendClient(BackendConfig.load(backendConfig, token.get().orElse(null)))
+                        .call("summarize", body), System.err);
     }
 
     /** The documentation of the proxy as Markdown, see {@link DocMarkdownRenderer}. */
@@ -492,14 +507,15 @@ final class UiService {
         Settings s = settings();
         BundleReport analysis = analyze(s, id);
         List<ProxyDocs.SourceFile> files = ProxyDocs.files(analysis);
-        if (files.stream().mapToLong(f -> f.content().length()).sum() > MAX_PLANNED) {
+        List<ProxyDocs.SourceFile> compacted = sent(analysis, files);
+        if (compacted.stream().mapToLong(f -> f.content().length()).sum() > MAX_PLANNED) {
             throw new UiException(413, "This proxy is too large to plan its tests at once");
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("proxy", analysis.name());
         body.put("bundles", FixContext.bundles(analysis).values().stream()
                 .map(b -> Map.of("name", b.name(), "type", b.type().label())).toList());
-        body.put("files", files);
+        body.put("files", compacted);
         List<TestTargets.Target> targets = targets(s, analysis);
         body.put("targets", targets);
         ProxyProfile profile = ProxyProfile.of(analysis).as(request.get("profile") instanceof String chosen ? chosen : null);
