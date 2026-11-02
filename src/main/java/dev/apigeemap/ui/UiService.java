@@ -380,7 +380,7 @@ final class UiService {
     String migrationHtml(String id) throws IOException {
         Settings s = settings();
         BundleReport analysis = analyze(s, id);
-        Optional<ProxyDocs.Stored> doc = docs.get(analysis.name());
+        Optional<ProxyDocs.Stored> doc = doc(analysis);
         return new MigrationHtmlRenderer().render(migrator(s).migrate(analysis, null), doc.orElse(null),
                 doc.isEmpty() || current(doc.get(), analysis));
     }
@@ -391,7 +391,7 @@ final class UiService {
      */
     Map<String, Object> documentation(String id) throws IOException {
         BundleReport analysis = analyze(settings(), id);
-        Optional<ProxyDocs.Stored> doc = docs.get(analysis.name());
+        Optional<ProxyDocs.Stored> doc = doc(analysis);
         return withRunning("document", id,
                 doc.isEmpty() ? Map.of() : documentation(doc.get(), current(doc.get(), analysis)));
     }
@@ -435,7 +435,7 @@ final class UiService {
         }
         ProxyDocs.Doc doc = answer instanceof Map<?, ?> reply ? ProxyDocs.doc(reply) : null;
         if (doc == null) return Map.of("error", BackendClient.UNAVAILABLE);
-        return documentation(docs.put(analysis.name(), ProxyDocs.fingerprint(files), doc), true);
+        return documentation(docs.put(key(analysis), ProxyDocs.fingerprint(files), doc), true);
     }
 
     /**
@@ -451,10 +451,36 @@ final class UiService {
     /** The documentation of the proxy as Markdown, see {@link DocMarkdownRenderer}. */
     Download exportDocumentation(String id) throws IOException {
         BundleReport analysis = analyze(settings(), id);
-        ProxyDocs.Stored doc = docs.get(analysis.name())
+        ProxyDocs.Stored doc = doc(analysis)
                 .orElseThrow(() -> new UiException(409, "Write the documentation first"));
         return new Download(analysis.name().replaceAll("[^A-Za-z0-9._-]", "_") + ".md", "text/markdown",
                 new DocMarkdownRenderer().render(analysis.name(), doc, current(doc, analysis)));
+    }
+
+    /**
+     * What the documentation and the test plan of the proxy are kept under: its name and revision, so that two
+     * revisions of a proxy each keep their own.
+     */
+    static String key(BundleReport analysis) {
+        String revision = analysis.revision() == null ? "" : analysis.revision().strip();
+        return revision.isEmpty() ? analysis.name() : analysis.name() + " rev " + revision;
+    }
+
+    // before the revision was part of the key, a proxy's documentation and plan were kept under its name: they are
+    // taken while they still match the proxy, and the next one written goes under the new key
+
+    private Optional<ProxyDocs.Stored> doc(BundleReport analysis) throws IOException {
+        Optional<ProxyDocs.Stored> doc = docs.get(key(analysis));
+        if (doc.isPresent() || key(analysis).equals(analysis.name())) return doc;
+        doc = docs.get(analysis.name());
+        return doc.isPresent() && current(doc.get(), analysis) ? doc : Optional.empty();
+    }
+
+    private Optional<TestPlans.Stored> plan(BundleReport analysis) throws IOException {
+        Optional<TestPlans.Stored> plan = plans.get(key(analysis));
+        if (plan.isPresent() || key(analysis).equals(analysis.name())) return plan;
+        plan = plans.get(analysis.name());
+        return plan.isPresent() && current(plan.get().fingerprint(), analysis) ? plan : Optional.empty();
     }
 
     private static boolean current(ProxyDocs.Stored doc, BundleReport analysis) throws IOException {
@@ -478,7 +504,7 @@ final class UiService {
     Map<String, Object> testPlan(String id) throws IOException {
         Settings s = settings();
         BundleReport analysis = analyze(s, id);
-        Optional<TestPlans.Stored> plan = plans.get(analysis.name());
+        Optional<TestPlans.Stored> plan = plan(analysis);
         Map<String, Object> m = new LinkedHashMap<>(plan.isEmpty() ? Map.of() : testPlan(plan.get(),
                 current(plan.get().fingerprint(), analysis), targets(s, analysis)));
         m.put("profile", ProxyProfile.of(analysis));
@@ -540,7 +566,7 @@ final class UiService {
         }
         TestPlans.Plan plan = answer instanceof Map<?, ?> reply ? TestPlans.plan(reply) : null;
         if (plan == null) return Map.of("error", BackendClient.UNAVAILABLE);
-        return testPlan(plans.put(analysis.name(), ProxyDocs.fingerprint(files), plan), true, targets);
+        return testPlan(plans.put(key(analysis), ProxyDocs.fingerprint(files), plan), true, targets);
     }
 
     /** What a test plan of the proxy must cover, with what its migration changes. */
@@ -560,7 +586,7 @@ final class UiService {
      */
     TestRunner.Run runTests(String id, Map<?, ?> request) throws IOException {
         BundleReport analysis = analyze(settings(), id);
-        TestPlans.Plan plan = plans.get(analysis.name()).map(TestPlans.Stored::plan)
+        TestPlans.Plan plan = plan(analysis).map(TestPlans.Stored::plan)
                 .orElseThrow(() -> new UiException(409, "Prepare the test plan first"));
         String edge;
         String hybrid;
@@ -594,7 +620,7 @@ final class UiService {
         TestExports.Format chosen = TestExports.Format.of(format);
         if (chosen == null) throw new UiException(400, "Export as postman, curl or karate");
         BundleReport analysis = analyze(settings(), id);
-        TestPlans.Plan plan = plans.get(analysis.name()).map(TestPlans.Stored::plan)
+        TestPlans.Plan plan = plan(analysis).map(TestPlans.Stored::plan)
                 .orElseThrow(() -> new UiException(409, "Prepare the test plan first"));
         return new Download(TestExports.fileName(chosen, analysis.name()), chosen.contentType,
                 TestExports.write(chosen, analysis.name(), plan));

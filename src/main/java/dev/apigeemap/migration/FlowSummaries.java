@@ -143,7 +143,12 @@ public final class FlowSummaries {
     }
 
     private Optional<Map<?, ?>> get(String flow, String fingerprint) {
-        Path file = file(flow);
+        Optional<Map<?, ?>> kept = get(file(flow, fingerprint), fingerprint);
+        // summaries were kept by the name of the flow alone before each version got its own
+        return kept.isPresent() ? kept : get(dir.resolve(name(flow)), fingerprint);
+    }
+
+    private Optional<Map<?, ?>> get(Path file, String fingerprint) {
         if (!Files.isRegularFile(file)) return Optional.empty();
         try {
             if (Json.parse(Files.readString(file)) instanceof Map<?, ?> stored && VERSION.equals(stored.get("version"))
@@ -166,14 +171,19 @@ public final class FlowSummaries {
             m.put("summary", summary);
             Path temp = Files.createTempFile(dir, "summary", ".tmp");
             Files.writeString(temp, Json.write(m) + "\n");
-            Files.move(temp, file(flow), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            Files.move(temp, file(flow, fingerprint), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException e) {
             // not kept: it is asked again next time
         }
     }
 
-    private Path file(String flow) {
-        return dir.resolve(ScriptReviews.fingerprint(flow).substring(0, 32) + ".json");
+    /** One file per version of the flow, so that two revisions of it do not replace each other's summary. */
+    private Path file(String flow, String fingerprint) {
+        return dir.resolve(name(flow + "\n" + fingerprint));
+    }
+
+    private static String name(String key) {
+        return ScriptReviews.fingerprint(key).substring(0, 32) + ".json";
     }
 
     private static long size(List<ProxyDocs.SourceFile> files) {

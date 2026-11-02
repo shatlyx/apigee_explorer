@@ -86,6 +86,11 @@ class FlowSummariesTest {
         }, System.err);
 
         assertEquals(1, asked.size());
+        FlowSummaries.Backend none = body -> {
+            throw new AssertionError("each version keeps its summary");
+        };
+        summaries.substitute("orders-api", FILES, none, System.err);
+        summaries.substitute("orders-api", changed, none, System.err);
     }
 
     @Test
