@@ -662,6 +662,46 @@ final class UiService {
     }
 
     /**
+     * Applies the auto-fixes of the proxy to its source bundles and to the shared flows it calls, or only the one of
+     * {@code picked} ({@code {bundle, rule, location}}) when it is given. Changes made by hand before are recorded
+     * first, as their own step; then each rule that changed a bundle is one step of its history. Answers the steps.
+     */
+    synchronized List<SourceHistory.Step> applyAutoFixes(String id, Map<?, ?> picked) throws IOException {
+        Settings s = settings();
+        BundleReport analysis = analyze(s, id);
+        Migrator migrator = migrator(s);
+        Finding only = null;
+        if (picked != null) {
+            only = find(migrator.migrate(analysis, null).findings(), picked);
+            if (only.fix() != Finding.Fix.AUTO) throw new UiException(409, "This finding has no automatic fix");
+        }
+        Map<String, SourceHistory> histories = new LinkedHashMap<>();
+        List<SourceHistory.Step> steps = new ArrayList<>();
+        try {
+            for (BundleReport bundle : FixContext.bundles(analysis).values()) {
+                SourceHistory history = SourceHistory.open(Path.of(bundle.path()), historyRoot);
+                histories.put(bundle.name(), history);
+                history.record("Manual changes");
+            }
+            Migrator.AppliedRule listener = (bundle, rule, changes) -> {
+                SourceHistory.Step step = histories.get(bundle.name())
+                        .record(rule.id() + " " + rule.title() + " (auto-fix)\n\n" + String.join("\n", changes));
+                if (step != null) steps.add(step);
+            };
+            if (only == null) {
+                migrator.migrateInPlace(analysis, listener);
+            } else {
+                migrator.fixInPlace(analysis, only, listener);
+            }
+        } finally {
+            histories.values().forEach(SourceHistory::close);
+        }
+        BundleReport fixed = analyze(s, id);
+        record(s, resolve(s, id), fixed, migrator.migrate(fixed, null), new HashMap<>());
+        return steps;
+    }
+
+    /**
      * Asks the backend for the fix of one finding of the proxy, picked by its bundle, rule and location. Nothing is
      * written: the proposal is kept under the returned {@code proposal} id until {@link #acceptFix} or
      * {@link #rejectFix}.

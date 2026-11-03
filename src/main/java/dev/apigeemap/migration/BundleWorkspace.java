@@ -44,6 +44,7 @@ final class BundleWorkspace {
     private final Map<String, String> replaced = new LinkedHashMap<>();
     private final Set<String> deleted = new LinkedHashSet<>();
     private final List<String> changes = new ArrayList<>();
+    private boolean writtenInPlace;
 
     BundleWorkspace(Path dir) {
         this.dir = dir;
@@ -134,6 +135,11 @@ final class BundleWorkspace {
         write(target);
     }
 
+    /** True once {@link #applyInPlace} changed the source folder: it no longer matches the analysis. */
+    boolean writtenInPlace() {
+        return writtenInPlace;
+    }
+
     boolean hasPendingChanges() {
         return !modified.isEmpty() || !replaced.isEmpty() || !deleted.isEmpty();
     }
@@ -142,6 +148,7 @@ final class BundleWorkspace {
     List<FileChange> applyInPlace() throws IOException {
         List<FileChange> applied = preview();
         write(dir);
+        writtenInPlace |= !applied.isEmpty();
         modified.clear();
         replaced.clear();
         deleted.clear();

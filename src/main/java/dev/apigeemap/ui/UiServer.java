@@ -160,6 +160,11 @@ public final class UiServer {
             }
             case "POST /api/apply" -> json(exchange, 200,
                     service.apply(query.get("id"), "true".equals(query.get("overwrite"))));
+            case "POST /api/autofix" -> {
+                String body = body(exchange);
+                json(exchange, 200, service.applyAutoFixes(query.get("id"),
+                        body.isBlank() ? null : (Map<?, ?>) Json.parse(body)));
+            }
             case "GET /api/overview" -> json(exchange, 200, service.overview());
             case "POST /api/fix" -> json(exchange, 200,
                     service.proposeFix(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));

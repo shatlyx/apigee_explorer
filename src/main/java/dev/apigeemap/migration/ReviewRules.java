@@ -22,7 +22,8 @@ final class ReviewRules {
 
     /** Each remark is a manual finding in its own category, at {@code <script>:<line> <title>}. */
     private static void scriptReview(MigrationContext ctx) throws IOException {
-        if (ctx.reviews == ScriptReviews.NONE) return;
+        // the fingerprints read the bundle as analyzed: once fixed in place it is not, and the next analysis reports it
+        if (ctx.reviews == ScriptReviews.NONE || ctx.workspace.writtenInPlace()) return;
         Set<String> locations = new HashSet<>();
         Map<String, String> fingerprints = ScriptReviewRequest.fingerprints(ctx.report);
         Set<String> reported = new HashSet<>();

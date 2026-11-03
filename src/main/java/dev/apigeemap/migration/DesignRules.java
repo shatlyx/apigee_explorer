@@ -118,7 +118,7 @@ final class DesignRules {
             String name = "ts-" + host.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "-")
                     + (uri.getPort() != -1 ? "-" + port : "");
 
-            if (!ctx.isFalsePositive(location)) {
+            if (!ctx.skipsFix(location)) {
                 String indent = Dom.indentOf(urlElement);
                 Element loadBalancer = Dom.element(urlElement, "LoadBalancer", null);
                 Element server = Dom.element(urlElement, "Server", null);
@@ -541,7 +541,7 @@ final class DesignRules {
     private static void unattachedPolicies(MigrationContext ctx) throws IOException {
         for (Policy policy : ctx.policies()) {
             if (policy.attached()) continue;
-            if (!ctx.isFalsePositive(policy.name())) {
+            if (!ctx.skipsFix(policy.name())) {
                 ctx.workspace.delete(policy.file(), "removed (not attached to any flow)");
                 removeFromDescriptor(ctx, policy.name());
             }

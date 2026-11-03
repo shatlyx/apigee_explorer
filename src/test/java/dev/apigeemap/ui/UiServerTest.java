@@ -319,6 +319,33 @@ class UiServerTest {
     }
 
     @Test
+    void appliesOneAutoFixThenAllOfThemToTheSources() throws Exception {
+        Path root = tmp.resolve("proxies");
+        copy(EXAMPLES.resolve("orders-api"), root.resolve("orders-api"));
+        Path shared = tmp.resolve("shared");
+        copy(EXAMPLES.resolve("sharedflows"), shared);
+        new Settings(root.toString(), List.of(shared.toString()), tmp.resolve("out").toString(), List.of(), Map.of(),
+                Map.of(), List.of()).save(tmp.resolve("settings.json"));
+        restart();
+        Path proxy = root.resolve("orders-api/apiproxy");
+        String endpoint = Files.readString(proxy.resolve("proxies/default.xml"));
+
+        String finding = "{\"rule\": \"DES-01\", \"bundle\": \"orders-api\", \"location\": \"TargetEndpoint legacy\"}";
+        List<?> steps = (List<?>) Json.parse(send("POST", "/api/autofix?id=orders-api", finding, true).body());
+        assertEquals(1, steps.size());
+        assertTrue(Files.readString(proxy.resolve("targets/legacy.xml")).contains("ts-legacy-orders-internal-8080"));
+        assertEquals(endpoint, Files.readString(proxy.resolve("proxies/default.xml")), "other auto-fixes wait");
+        assertTrue(Files.exists(proxy.resolve("policies/KVM-Legacy-Unused.xml")));
+        assertEquals(404, send("POST", "/api/autofix?id=orders-api", finding, true).statusCode(), "fixed already");
+
+        assertEquals(2, ((List<?>) Json.parse(post("/api/autofix?id=orders-api").body())).size());
+        assertFalse(Files.readString(proxy.resolve("proxies/default.xml")).contains("<VirtualHost>"));
+        assertFalse(Files.exists(proxy.resolve("policies/KVM-Legacy-Unused.xml")));
+        assertFalse(Files.exists(tmp.resolve("out")), "nothing is written to the output folder");
+        assertEquals(0.0, listed("orders-api").get("autoFixes"));
+    }
+
+    @Test
     void savesSettingsThatChangeTheMigration() throws Exception {
         Map<?, ?> payload = (Map<?, ?>) Json.parse(get("/api/settings").body());
         assertEquals(40, ((List<?>) payload.get("rules")).size());

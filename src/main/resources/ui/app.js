@@ -49,6 +49,9 @@ const api = {
   proxy: id => request('GET', '/api/proxy?id=' + encodeURIComponent(id)),
   analyzeProxy: id => request('POST', '/api/proxy/analyze?id=' + encodeURIComponent(id)),
   apply: (id, overwrite) => request('POST', '/api/apply?id=' + encodeURIComponent(id) + (overwrite ? '&overwrite=true' : '')),
+  // without a finding, every auto-fix of the proxy
+  autoFix: (id, finding) => request('POST', '/api/autofix?id=' + encodeURIComponent(id),
+    finding ? {bundle: finding.bundle, rule: finding.rule, location: finding.location} : undefined),
   overview: () => request('GET', '/api/overview'),
   variables: id => request('GET', '/api/variables?id=' + encodeURIComponent(id)),
   // a failed fix answers 200 with an error
@@ -547,6 +550,12 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
           : 'Look for false positives among the ' + shown.length + ' findings shown; nothing is marked until you confirm',
         onclick: event => triage(event.currentTarget, shown)}, 'Spot false positives'));
     }
+    const autos = findings.filter(f => f.fix === 'AUTO');
+    if (autos.length) {
+      filters.append(h('button', {type: 'button', class: shown.length ? '' : 'push',
+        title: 'Apply the ' + autos.length + ' automatic fix(es) of the proxy to its source bundles, one step of history per rule',
+        onclick: event => autoFix(event.currentTarget, null)}, autos.length === 1 ? 'Apply the auto-fix' : 'Apply ' + autos.length + ' auto-fixes'));
+    }
     if (manual.length > 1) {
       const tooMany = manual.length > MAX_GROUPED;
       filters.append(h('button', {type: 'button', class: shown.length ? '' : 'push', disabled: tooMany,
@@ -576,7 +585,8 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
             : f.fix === 'MANUAL'
             ? h('button', {type: 'button', title: 'Get a proposed fix for this finding and review it before it is written',
                 onclick: () => fixDialog(id, f)}, 'Propose a fix')
-            : null,
+            : h('button', {type: 'button', title: 'Apply the automatic fix of this finding to the source bundle, as one step of history',
+                onclick: event => autoFix(event.currentTarget, f)}, 'Fix'),
           h('button', {type: 'button', title: 'Stop reporting this finding' + (f.fix === 'AUTO' ? ' and do not apply its automatic fix' : ''),
             onclick: () => markFalsePositive(f)}, 'False positive')))),
         likely.has(findingKey(f)) ? h('tr', {class: 'triage'}, h('td', {colspan: 8}, h('div', {},
@@ -616,6 +626,30 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
       reanalyze();
     } catch (error) {
       toast(error.message, true);
+    }
+  }
+
+  /** Applies the auto-fix of {@code finding}, or all of them without one, to the sources. */
+  async function autoFix(button, finding) {
+    if (!finding) {
+      const count = findings.filter(f => f.fix === 'AUTO').length;
+      const ok = await confirmDialog('Apply ' + count + ' automatic fix(es) to the sources?',
+        'The source bundles of the proxy and the shared flows it calls will be changed. Each rule is recorded as a step of history, which you can revert.',
+        'Apply');
+      if (!ok) return;
+    }
+    const label = button.textContent;
+    button.disabled = true;
+    button.replaceChildren(h('span', {class: 'spinner'}), ' Fixing…');
+    try {
+      const steps = await api.autoFix(id, finding);
+      toast((steps.length ? 'Written to the sources, recorded as step ' + steps.map(s => s.id).join(', ')
+        : 'Nothing to change in the sources'));
+      reanalyze();
+    } catch (error) {
+      toast(error.message, true);
+      button.disabled = false;
+      button.textContent = label;
     }
   }
 

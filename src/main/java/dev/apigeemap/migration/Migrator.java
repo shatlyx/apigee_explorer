@@ -70,7 +70,7 @@ public final class Migrator {
     /** @param outputDir where to write the migrated bundles; null for a dry run (report only) */
     public MigrationReport migrate(BundleReport root, Path outputDir) throws IOException {
         if (outputDir != null) checkEmpty(outputDir);
-        return run(root, outputDir, null);
+        return run(root, outputDir, null, null);
     }
 
     /**
@@ -78,10 +78,19 @@ public final class Migrator {
      * changes of each rule before the next one runs, so that each rule can be recorded as a step of its own.
      */
     public MigrationReport migrateInPlace(BundleReport root, AppliedRule listener) throws IOException {
-        return run(root, null, listener);
+        return run(root, null, null, listener);
     }
 
-    private MigrationReport run(BundleReport root, Path outputDir, AppliedRule listener) throws IOException {
+    /**
+     * Applies the auto-fix of one finding only, picked by its rule, bundle and location, as {@link #migrateInPlace}
+     * does; the other auto-fixes leave the bundles as they are.
+     */
+    public MigrationReport fixInPlace(BundleReport root, Finding only, AppliedRule listener) throws IOException {
+        return run(root, null, only, listener);
+    }
+
+    private MigrationReport run(BundleReport root, Path outputDir, Finding only, AppliedRule listener)
+            throws IOException {
 
         Map<String, BundleReport> sharedFlows = new LinkedHashMap<>();
         MigrationContext.collect(root, sharedFlows);
@@ -95,7 +104,7 @@ public final class Migrator {
         for (BundleReport bundle : bundles) {
             BundleWorkspace workspace = new BundleWorkspace(Path.of(bundle.path()));
             MigrationContext ctx = new MigrationContext(bundle, workspace, sharedFlows, catalog.bundles(), options,
-                    reviews, resources, targetServers);
+                    reviews, resources, targetServers, only);
             Map<String, FileChange> applied = new LinkedHashMap<>();
             for (Rule rule : RULES) {
                 if (options.disabledRules().contains(rule.id())) continue;

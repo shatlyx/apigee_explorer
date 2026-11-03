@@ -84,7 +84,7 @@ final class HybridRules {
     /** StatisticsCollector → DataCapture, one data collector per statistic. */
     private static void statisticsCollector(MigrationContext ctx) throws IOException {
         for (Policy policy : ctx.policies("StatisticsCollector")) {
-            boolean apply = !ctx.isFalsePositive(policy.name());
+            boolean apply = !ctx.skipsFix(policy.name());
             Element root = ctx.xml(policy);
             StringBuilder xml = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n")
                     .append("<DataCapture name=\"").append(escape(policy.name())).append('"');
@@ -139,7 +139,7 @@ final class HybridRules {
             if (virtualHosts.isEmpty()) continue;
             List<String> names = virtualHosts.stream().map(Xml::text).toList();
             String location = "ProxyEndpoint " + Xml.nameOf(root);
-            if (!ctx.isFalsePositive(location)) {
+            if (!ctx.skipsFix(location)) {
                 virtualHosts.forEach(Dom::remove);
                 ctx.workspace.modified(file, "removed VirtualHost " + names(names));
                 names.forEach(vh -> ctx.resource("Environment group hostnames", vh,
