@@ -55,11 +55,17 @@ public record FixContext(Finding finding, String ruleTitle, List<PolicyContext> 
 
     /** @param bundles the bundle of the finding, and those that hold its related policies */
     public static FixContext of(Finding finding, Map<String, BundleReport> bundles) throws IOException {
+        return of(finding, bundles, new LinkedHashMap<>());
+    }
+
+    /** @param flows the variable flows of the bundles by name, filled as they are needed and shared between calls */
+    static FixContext of(Finding finding, Map<String, BundleReport> bundles, Map<String, VariableFlow> flows)
+            throws IOException {
         BundleReport bundle = bundles.get(finding.bundle());
         if (bundle == null) throw new IllegalArgumentException("Unknown bundle " + finding.bundle());
         String title = Migrator.rules().stream().filter(r -> r.id().equals(finding.rule())).map(RuleInfo::title)
                 .findFirst().orElse(null);
-        Builder builder = new Builder(bundles);
+        Builder builder = new Builder(bundles, flows);
         for (Finding.Subject subject : finding.subjects()) {
             BundleReport owner = bundles.get(subject.bundle());
             if (owner == null) continue;
@@ -92,12 +98,13 @@ public record FixContext(Finding finding, String ruleTitle, List<PolicyContext> 
     private static final class Builder {
 
         private final Map<String, BundleReport> bundles;
-        private final Map<String, VariableFlow> flows = new LinkedHashMap<>();
+        private final Map<String, VariableFlow> flows;
         private final List<PolicyContext> policies = new ArrayList<>();
         private final Map<String, SourceFile> files = new LinkedHashMap<>();
 
-        Builder(Map<String, BundleReport> bundles) {
+        Builder(Map<String, BundleReport> bundles, Map<String, VariableFlow> flows) {
             this.bundles = bundles;
+            this.flows = flows;
         }
 
         void policy(BundleReport bundle, Policy policy) throws IOException {

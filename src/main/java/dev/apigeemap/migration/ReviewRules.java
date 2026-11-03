@@ -1,8 +1,11 @@
 package dev.apigeemap.migration;
 
+import dev.apigeemap.model.Policy;
+
 import java.io.IOException;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static dev.apigeemap.migration.Finding.Category.DESIGN;
@@ -19,11 +22,18 @@ final class ReviewRules {
 
     /** Each remark is a manual finding in its own category, at {@code <script>:<line> <title>}. */
     private static void scriptReview(MigrationContext ctx) throws IOException {
+        if (ctx.reviews == ScriptReviews.NONE) return;
         Set<String> locations = new HashSet<>();
+        Map<String, String> fingerprints = ScriptReviewRequest.fingerprints(ctx.report);
+        Set<String> reported = new HashSet<>();
         for (Scripts.Script script : Scripts.of(ctx.report)) {
             if (script.python()) continue;
-            List<ScriptReviews.Remark> remarks = ctx.reviews.get(ScriptReviews.fingerprint(script.source()))
-                    .orElse(List.of());
+            String place = script.file().equals("inline") ? ctx.report.policies().stream()
+                    .filter(p -> p.name().equals(script.policy())).map(Policy::file).findFirst().orElse(null)
+                    : script.file();
+            // a file run by several policies was reviewed once, for all of them
+            if (place == null || !reported.add(place)) continue;
+            List<ScriptReviews.Remark> remarks = ctx.reviews.get(fingerprints.get(place)).orElse(List.of());
             String file = script.file().equals("inline") ? script.policy() + " (inline)" : script.file();
             for (ScriptReviews.Remark remark : remarks) {
                 String where = file + (remark.line() > 0 ? ":" + remark.line() : "") + " " + remark.title();

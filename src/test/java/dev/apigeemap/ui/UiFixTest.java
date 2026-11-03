@@ -216,9 +216,23 @@ class UiFixTest {
                 Json.parse(post("/api/review?id=factorization-api").body()), "nothing left to review");
         assertEquals(1, reviews.size());
 
+        Path endpoint = bundle.resolve("proxies/default.xml");
+        String flows = Files.readString(endpoint);
+        Files.writeString(endpoint, flows.replace("<Step><Name>JS-Broken</Name></Step>",
+                "<Step><Name>JS-Broken</Name><Condition>request.header.x-check = \"on\"</Condition></Step>"));
+        detail = detail();
+        assertFalse(findings(detail).stream().anyMatch(f -> f.get("rule").equals("REV-01")),
+                "a remark goes with the proxy around the script too");
+        assertTrue(((Number) ((Map<?, ?>) detail.get("scripts")).get("reviewed")).intValue() < total,
+                "the scripts run from the endpoint are to review again");
+        Files.writeString(endpoint, flows);
+        assertEquals(1, findings(detail()).stream().filter(f -> f.get("rule").equals("REV-01")).count(),
+                "and come back with it");
+
         Files.writeString(bundle.resolve("resources/jsc/broken.js"), "// changed by hand\n");
         detail = detail();
-        assertEquals((double) total - 1, ((Map<?, ?>) detail.get("scripts")).get("reviewed"));
+        assertTrue(((Number) ((Map<?, ?>) detail.get("scripts")).get("reviewed")).intValue() <= total - 1,
+                "the script, and those whose variables it sets or reads, are to review again");
         assertFalse(findings(detail).stream().anyMatch(f -> f.get("rule").equals("REV-01")),
                 "a remark goes with the script it was made on");
 

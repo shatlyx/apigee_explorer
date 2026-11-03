@@ -951,7 +951,7 @@ final class UiService {
         body.put("scripts", targets.stream().map(t -> {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("bundle", t.bundle());
-            m.put("policy", t.policy());
+            m.put("policy", String.join(", ", t.policies()));
             m.put("file", t.file());
             m.put("inline", t.inline());
             return m;
