@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -82,14 +83,15 @@ public final class Migrator {
     }
 
     /**
-     * Applies the auto-fix of one finding only, picked by its rule, bundle and location, as {@link #migrateInPlace}
-     * does; the other auto-fixes leave the bundles as they are.
+     * Applies the auto-fixes of some findings only, picked by their rule, bundle and location, as
+     * {@link #migrateInPlace} does; the other auto-fixes leave the bundles as they are.
      */
-    public MigrationReport fixInPlace(BundleReport root, Finding only, AppliedRule listener) throws IOException {
+    public MigrationReport fixInPlace(BundleReport root, Collection<Finding> only, AppliedRule listener)
+            throws IOException {
         return run(root, null, only, listener);
     }
 
-    private MigrationReport run(BundleReport root, Path outputDir, Finding only, AppliedRule listener)
+    private MigrationReport run(BundleReport root, Path outputDir, Collection<Finding> only, AppliedRule listener)
             throws IOException {
 
         Map<String, BundleReport> sharedFlows = new LinkedHashMap<>();

@@ -47,13 +47,14 @@ final class MigrationContext {
     private final List<Finding> findings = new ArrayList<>();
     private final List<FalsePositive.Hidden> hidden = new ArrayList<>();
     private final Set<FalsePositive> matched = new HashSet<>();
-    /** The only finding whose auto-fix may change the bundle; null for all of them. */
-    private final Finding only;
+    /** The only findings whose auto-fixes may change the bundle; null for all of them. */
+    private final Collection<Finding> only;
     private Rule rule;
 
     MigrationContext(BundleReport report, BundleWorkspace workspace, Map<String, BundleReport> sharedFlows,
                      Map<Path, String> catalog, MigrationOptions options, ScriptReviews reviews,
-                     Map<String, EnvResource> resources, Map<String, NewTargetServer> targetServers, Finding only) {
+                     Map<String, EnvResource> resources, Map<String, NewTargetServer> targetServers,
+                     Collection<Finding> only) {
         this.report = report;
         this.workspace = workspace;
         this.sharedFlows = sharedFlows;
@@ -138,13 +139,12 @@ final class MigrationContext {
 
     /**
      * True when the auto-fix of the finding the current rule would report at {@code location} must leave the bundle
-     * as it is: the finding is marked as a false positive, or another finding is the only one to fix. An auto-fix
+     * as it is: the finding is marked as a false positive, or it is not among the findings to fix. An auto-fix
      * checks it before changing anything.
      */
     boolean skipsFix(String location) {
-        return falsePositive(location) != null || only != null
-                && !(only.rule().equals(rule.id()) && only.bundle().equals(report.name())
-                && only.location().equals(location));
+        return falsePositive(location) != null || only != null && only.stream().noneMatch(f ->
+                f.rule().equals(rule.id()) && f.bundle().equals(report.name()) && f.location().equals(location));
     }
 
     private FalsePositive falsePositive(String location) {

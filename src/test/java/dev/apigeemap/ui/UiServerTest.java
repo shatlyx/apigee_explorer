@@ -319,7 +319,7 @@ class UiServerTest {
     }
 
     @Test
-    void appliesOneAutoFixThenAllOfThemToTheSources() throws Exception {
+    void appliesTheTickedAutoFixesToTheSources() throws Exception {
         Path root = tmp.resolve("proxies");
         copy(EXAMPLES.resolve("orders-api"), root.resolve("orders-api"));
         Path shared = tmp.resolve("shared");
@@ -329,18 +329,25 @@ class UiServerTest {
         restart();
         Path proxy = root.resolve("orders-api/apiproxy");
         String endpoint = Files.readString(proxy.resolve("proxies/default.xml"));
+        String des01 = "{\"rule\": \"DES-01\", \"bundle\": \"orders-api\", \"location\": \"TargetEndpoint legacy\"}";
+        String des07 = "{\"rule\": \"DES-07\", \"bundle\": \"orders-api\", \"location\": \"KVM-Legacy-Unused\"}";
+        String hyb02 = "{\"rule\": \"HYB-02\", \"bundle\": \"orders-api\", \"location\": \"ProxyEndpoint default\"}";
 
-        String finding = "{\"rule\": \"DES-01\", \"bundle\": \"orders-api\", \"location\": \"TargetEndpoint legacy\"}";
-        List<?> steps = (List<?>) Json.parse(send("POST", "/api/autofix?id=orders-api", finding, true).body());
-        assertEquals(1, steps.size());
+        // two of the three
+        List<?> steps = (List<?>) Json.parse(send("POST", "/api/autofix?id=orders-api",
+                "{\"findings\": [" + des01 + ", " + des07 + "]}", true).body());
+        assertEquals(2, steps.size());
         assertTrue(Files.readString(proxy.resolve("targets/legacy.xml")).contains("ts-legacy-orders-internal-8080"));
-        assertEquals(endpoint, Files.readString(proxy.resolve("proxies/default.xml")), "other auto-fixes wait");
-        assertTrue(Files.exists(proxy.resolve("policies/KVM-Legacy-Unused.xml")));
-        assertEquals(404, send("POST", "/api/autofix?id=orders-api", finding, true).statusCode(), "fixed already");
-
-        assertEquals(2, ((List<?>) Json.parse(post("/api/autofix?id=orders-api").body())).size());
-        assertFalse(Files.readString(proxy.resolve("proxies/default.xml")).contains("<VirtualHost>"));
         assertFalse(Files.exists(proxy.resolve("policies/KVM-Legacy-Unused.xml")));
+        assertEquals(endpoint, Files.readString(proxy.resolve("proxies/default.xml")), "HYB-02 was not ticked");
+        assertEquals(1.0, listed("orders-api").get("autoFixes"));
+        assertEquals(404, send("POST", "/api/autofix?id=orders-api", "{\"findings\": [" + des01 + "]}", true)
+                .statusCode(), "fixed already");
+        assertEquals(400, post("/api/autofix?id=orders-api").statusCode(), "nothing picked");
+
+        assertEquals(1, ((List<?>) Json.parse(send("POST", "/api/autofix?id=orders-api",
+                "{\"findings\": [" + hyb02 + "]}", true).body())).size());
+        assertFalse(Files.readString(proxy.resolve("proxies/default.xml")).contains("<VirtualHost>"));
         assertFalse(Files.exists(tmp.resolve("out")), "nothing is written to the output folder");
         assertEquals(0.0, listed("orders-api").get("autoFixes"));
     }

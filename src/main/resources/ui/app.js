@@ -49,9 +49,8 @@ const api = {
   proxy: id => request('GET', '/api/proxy?id=' + encodeURIComponent(id)),
   analyzeProxy: id => request('POST', '/api/proxy/analyze?id=' + encodeURIComponent(id)),
   apply: (id, overwrite) => request('POST', '/api/apply?id=' + encodeURIComponent(id) + (overwrite ? '&overwrite=true' : '')),
-  // without a finding, every auto-fix of the proxy
-  autoFix: (id, finding) => request('POST', '/api/autofix?id=' + encodeURIComponent(id),
-    finding ? {bundle: finding.bundle, rule: finding.rule, location: finding.location} : undefined),
+  autoFix: (id, findings) => request('POST', '/api/autofix?id=' + encodeURIComponent(id),
+    {findings: findings.map(f => ({bundle: f.bundle, rule: f.rule, location: f.location}))}),
   overview: () => request('GET', '/api/overview'),
   variables: id => request('GET', '/api/variables?id=' + encodeURIComponent(id)),
   // a failed fix answers 200 with an error
@@ -349,6 +348,8 @@ const detailState = {tab: 'findings', severity: '', category: '', fix: ''};
 const TABS_ON_REQUEST = ['documentation', 'tests', 'variables', 'map', 'history'];
 /** The likely false positives found by a triage, by proxy id then finding key, until confirmed or kept. */
 const triaged = {};
+// auto-fix findings unticked by proxy id, by findingKey: left out of Apply auto-fixes
+const unticked = {};
 
 function findingKey(f) {
   return f.bundle + '\n' + f.rule + '\n' + f.location;
@@ -550,11 +551,16 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
           : 'Look for false positives among the ' + shown.length + ' findings shown; nothing is marked until you confirm',
         onclick: event => triage(event.currentTarget, shown)}, 'Spot false positives'));
     }
-    const autos = findings.filter(f => f.fix === 'AUTO');
+    const autos = shown.filter(f => f.fix === 'AUTO');
+    const left = unticked[id] || (unticked[id] = new Set());
+    const picked = autos.filter(f => !left.has(findingKey(f)));
     if (autos.length) {
-      filters.append(h('button', {type: 'button', class: shown.length ? '' : 'push',
-        title: 'Apply the ' + autos.length + ' automatic fix(es) of the proxy to its source bundles, one step of history per rule',
-        onclick: event => autoFix(event.currentTarget, null)}, autos.length === 1 ? 'Apply the auto-fix' : 'Apply ' + autos.length + ' auto-fixes'));
+      filters.append(h('button', {type: 'button', disabled: !picked.length,
+        title: picked.length ? 'Apply the ' + picked.length + ' ticked automatic fix(es) shown to the source bundles, one step of history per rule'
+          : 'Tick the automatic fixes to apply',
+        onclick: event => autoFix(event.currentTarget, picked, true)},
+        picked.length === autos.length ? (autos.length === 1 ? 'Apply the auto-fix' : 'Apply ' + autos.length + ' auto-fixes')
+          : 'Apply ' + picked.length + ' of ' + autos.length + ' auto-fixes'));
     }
     if (manual.length > 1) {
       const tooMany = manual.length > MAX_GROUPED;
@@ -577,7 +583,10 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
         h('td', {}, h('code', {}, f.location)),
         h('td', {}, f.message),
         h('td', {class: 'sub'}, f.action),
-        h('td', {}, fixBadge(f, applied)),
+        h('td', {class: 'nowrap'}, f.fix === 'AUTO' ? h('input', {type: 'checkbox', checked: !left.has(findingKey(f)),
+            title: 'Apply with the other ticked auto-fixes', 'aria-label': 'Apply the auto-fix of ' + f.rule + ' at ' + f.location,
+            onchange: event => { event.target.checked ? left.delete(findingKey(f)) : left.add(findingKey(f)); render(); }}) : null,
+          ' ', fixBadge(f, applied)),
         h('td', {}, h('div', {class: 'row-actions'},
           portable(f)
             ? h('button', {type: 'button', title: 'Get a proposed replacement for this target, as policies or as a service of its own, and review it before it is written',
@@ -586,7 +595,7 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
             ? h('button', {type: 'button', title: 'Get a proposed fix for this finding and review it before it is written',
                 onclick: () => fixDialog(id, f)}, 'Propose a fix')
             : h('button', {type: 'button', title: 'Apply the automatic fix of this finding to the source bundle, as one step of history',
-                onclick: event => autoFix(event.currentTarget, f)}, 'Fix'),
+                onclick: event => autoFix(event.currentTarget, [f], false)}, 'Fix'),
           h('button', {type: 'button', title: 'Stop reporting this finding' + (f.fix === 'AUTO' ? ' and do not apply its automatic fix' : ''),
             onclick: () => markFalsePositive(f)}, 'False positive')))),
         likely.has(findingKey(f)) ? h('tr', {class: 'triage'}, h('td', {colspan: 8}, h('div', {},
@@ -629,11 +638,10 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
     }
   }
 
-  /** Applies the auto-fix of {@code finding}, or all of them without one, to the sources. */
-  async function autoFix(button, finding) {
-    if (!finding) {
-      const count = findings.filter(f => f.fix === 'AUTO').length;
-      const ok = await confirmDialog('Apply ' + count + ' automatic fix(es) to the sources?',
+  /** Applies the auto-fixes of {@code picked} to the sources, once confirmed when {@code ask} is set. */
+  async function autoFix(button, picked, ask) {
+    if (ask) {
+      const ok = await confirmDialog('Apply ' + picked.length + ' automatic fix(es) to the sources?',
         'The source bundles of the proxy and the shared flows it calls will be changed. Each rule is recorded as a step of history, which you can revert.',
         'Apply');
       if (!ok) return;
@@ -642,7 +650,8 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
     button.disabled = true;
     button.replaceChildren(h('span', {class: 'spinner'}), ' Fixing…');
     try {
-      const steps = await api.autoFix(id, finding);
+      const steps = await api.autoFix(id, picked);
+      picked.forEach(f => unticked[id].delete(findingKey(f)));
       toast((steps.length ? 'Written to the sources, recorded as step ' + steps.map(s => s.id).join(', ')
         : 'Nothing to change in the sources'));
       reanalyze();
