@@ -800,6 +800,14 @@ function groupFixDialog(id, findings) {
     () => api.proposeFixes(id, findings), 'No change proposed for these findings.');
 }
 
+/** The files whose proposed edits do not match their text, left out of a proposal. */
+function notAppliedView(notApplied) {
+  if (!notApplied?.length) return null;
+  return h('div', {class: 'warnings not-applied'}, h('b', {}, 'Not applied'),
+    h('ul', {}, notApplied.map(n => h('li', {}, h('code', {}, n.bundle + '/' + n.path), ': ' + n.message))),
+    h('p', {class: 'sub'}, 'The other changes may rely on these: check them before applying.'));
+}
+
 async function proposalDialog(title, subtitle, waiting, ask, nothing) {
   let proposal = null;
   const body = h('div', {class: 'proposal'},
@@ -834,6 +842,7 @@ async function proposalDialog(title, subtitle, waiting, ask, nothing) {
     h('p', {}, proposal.summary),
     proposal.warnings.length ? h('div', {class: 'warnings'}, h('b', {}, 'Check before deploying'),
       h('ul', {}, proposal.warnings.map(w => h('li', {}, w)))) : null,
+    notAppliedView(proposal.notApplied),
     portView(proposal),
     proposal.edits.length ? h('div', {}, proposal.edits.map(edit => h('div', {class: 'file-edit'},
       h('div', {}, h('span', {class: 'badge ' + (edit.action === 'delete' ? 'bad' : 'auto')}, edit.action), ' ',
@@ -2622,6 +2631,8 @@ async function editorView(id, isCurrent) {
       body.replaceChildren(h('div', {},
         h('p', {class: 'editor-answer'}, result.summary),
         result.warnings.length ? h('ul', {}, result.warnings.map(w => h('li', {}, w))) : null,
+        notAppliedView(result.notApplied),
+        unsentView(result, title, request, dialog),
         others.length ? h('p', {class: 'meta'}, 'Left out, shared flows are read-only here: ' + others.map(e => e.bundle + '/' + e.path).join(', ')) : null,
         own.length && !review.analyzed ? errorBox({message: 'This change leaves XML to fix: ' + review.added.map(p => p.file + ': ' + p.message).join('; ')}) : null,
         own.length && review.analyzed ? h('p', {class: 'meta'}, 'Checked: ' + review.resolved + ' problem(s) resolved, ' + review.added.length + ' new.') : null,
@@ -2653,6 +2664,26 @@ async function editorView(id, isCurrent) {
     });
   }
 
+  /** The files a compose left out as too large, and a way to ask again with those the answer needs. */
+  function unsentView(result, title, request, dialog) {
+    if (!result.unsent?.length) return null;
+    const needed = result.needed || [];
+    const again = needed.length ? h('button', {type: 'button', onclick: () => {
+      dialog.close();
+      assistDialog(title, {...request, include: [...new Set([...(request.include || []), ...needed])]});
+    }}, 'Ask again with ' + needed.join(', ')) : null;
+    return h('div', {},
+      h('details', {class: 'meta'},
+        h('summary', {}, result.unsent.length + ' large file(s) not sent in full, only outlined'),
+        h('ul', {}, result.unsent.map(path => h('li', {}, path)))),
+      again);
+  }
+
+  function openPath() {
+    const file = active && opened.get(active);
+    return file && file.bundle === root ? file.path : null;
+  }
+
   function selection() {
     const file = active && opened.get(active);
     const range = editor.getSelection();
@@ -2663,7 +2694,7 @@ async function editorView(id, isCurrent) {
   async function composeDialog() {
     const asked = await textDialog('Compose', 'Say what the proxy should do, or ask about it. Your unsaved text is taken into account, and nothing changes until you apply and save.',
       'What do you need?', 'Send');
-    if (asked) assistDialog('Compose', {request: asked, selection: selection()});
+    if (asked) assistDialog('Compose', {request: asked, selection: selection(), open: openPath()});
   }
 
   const contextActions = [

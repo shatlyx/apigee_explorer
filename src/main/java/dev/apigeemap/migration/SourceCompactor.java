@@ -151,7 +151,8 @@ public final class SourceCompactor {
         return out.toString();
     }
 
-    private static Set<String> names(String text) {
+    /** The names a script defines at the top level, at most 100; empty when it does not parse. */
+    public static Set<String> names(String text) {
         Set<String> names = new LinkedHashSet<>();
         AstRoot root;
         try (Context cx = Context.enter()) {

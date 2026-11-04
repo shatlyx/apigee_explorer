@@ -207,7 +207,9 @@ final class EditorService {
     /**
      * Asks the backend about the text being edited, buffers included: to fix {@code {finding: {bundle, rule, location}}}
      * or to answer {@code {request, selection?: {path, text}}}. Nothing is kept or written. Answers {@code {summary,
-     * warnings, edits, review}}, or {@code {error}}: {@code review} is what the checks say of the text with the edits.
+     * warnings, edits, notApplied, review}}, or {@code {error}}: {@code review} is what the checks say of the text
+     * with the edits. A file the backend proposes as edits that do not match its text exactly once is left out, in
+     * {@code notApplied}.
      */
     Map<String, Object> assist(String id, Map<?, ?> request) throws IOException {
         String name = bundles(id).keySet().iterator().next();
@@ -329,22 +331,39 @@ final class EditorService {
         if (!(request.get("request") instanceof String asked) || asked.isBlank()) {
             throw new UiService.UiException(400, "Say what you need");
         }
-        List<FixContext.SourceFile> files = new ArrayList<>();
-        long size = 0;
+        Map<String, String> texts = new LinkedHashMap<>();
         for (EditorFile file : files(copy)) {
             if (!file.text() || UNSENT_FOLDERS.stream().anyMatch(file.path()::startsWith)) continue;
-            String content = text(copy.resolve(file.path()));
-            size += content.length();
-            files.add(new FixContext.SourceFile(report.name(), file.path(), content));
+            texts.put(file.path(), text(copy.resolve(file.path())));
         }
-        if (size > MAX_COMPOSED) throw new UiService.UiException(413, "This proxy is too large to be sent at once");
+        Set<String> focus = new LinkedHashSet<>();
+        if (request.get("open") instanceof String open) focus.add(open);
+        if (request.get("selection") instanceof Map<?, ?> selected && selected.get("path") instanceof String path) {
+            focus.add(path);
+        }
+        Set<String> include = new LinkedHashSet<>();
+        if (request.get("include") instanceof List<?> paths) paths.forEach(p -> include.add(String.valueOf(p)));
+        ComposeSelection selection;
+        try {
+            selection = ComposeSelection.of(texts, asked, focus, include, MAX_COMPOSED);
+        } catch (ComposeSelection.TooLarge e) {
+            throw new UiService.UiException(413, e.getMessage());
+        }
+        List<FixContext.SourceFile> files = new ArrayList<>();
+        for (String path : selection.sent()) files.add(new FixContext.SourceFile(report.name(), path, texts.get(path)));
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("proxy", report.name());
         body.put("request", asked);
         if (request.get("selection") != null) body.put("selection", request.get("selection"));
         body.put("flow", outline.text());
         body.put("files", files);
-        return service.ask("compose", body, files);
+        if (!selection.unsent().isEmpty()) body.put("unsent", selection.manifest());
+        Map<String, Object> answer = service.ask("compose", body, files);
+        if (!answer.containsKey("error") && !selection.unsent().isEmpty()) {
+            answer.put("unsent", List.copyOf(selection.unsent().keySet()));
+            answer.put("needed", selection.named(answer.get("summary") + "\n" + answer.get("warnings")));
+        }
+        return answer;
     }
 
     /** What changes between two checks: {@code {analyzed, added, resolved}}. */

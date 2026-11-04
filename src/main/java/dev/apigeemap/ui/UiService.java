@@ -870,7 +870,8 @@ final class UiService {
         // a failure answers 200 like a fix, with the same message whatever the cause
         if (!(answer instanceof Map<?, ?> reply)) return new LinkedHashMap<>(Map.of("error", BackendClient.UNAVAILABLE));
 
-        List<ProposedEdit> edits = edits(reply, files);
+        List<Map<String, Object>> notApplied = new ArrayList<>();
+        List<ProposedEdit> edits = edits(reply, files, notApplied);
         String summary = String.valueOf(reply.get("summary"));
         Service service = null;
         if (operation.equals("port") && reply.get("service") instanceof Map<?, ?> proposed) {
@@ -888,6 +889,7 @@ final class UiService {
         result.put("summary", summary);
         result.put("warnings", reply.get("warnings") instanceof List<?> warnings ? warnings : List.of());
         result.put("edits", edits);
+        result.put("notApplied", notApplied);
         if (operation.equals("port")) {
             result.put("approach", reply.get("approach"));
             result.put("service", service == null ? null : serviceView(service));
@@ -895,19 +897,38 @@ final class UiService {
         return result;
     }
 
-    private static List<ProposedEdit> edits(Map<?, ?> reply, List<FixContext.SourceFile> files) {
+    /**
+     * The proposed files with their text before and after. A file proposed as edits ({@code [{old, new}]}) gets them
+     * applied to the text sent; when one does not match exactly once, the file goes to {@code notApplied}, {@code
+     * {bundle, path, message}}, instead of the edits.
+     */
+    private static List<ProposedEdit> edits(Map<?, ?> reply, List<FixContext.SourceFile> files,
+                                            List<Map<String, Object>> notApplied) {
         List<ProposedEdit> edits = new ArrayList<>();
         if (reply.get("edits") instanceof List<?> list) {
             for (Object item : list) {
                 if (!(item instanceof Map<?, ?> edit)) continue;
                 String bundle = String.valueOf(edit.get("bundle"));
                 String path = String.valueOf(edit.get("path"));
+                String action = String.valueOf(edit.get("action"));
                 String before = files.stream()
                         .filter(f -> f.bundle().equals(bundle) && f.path().equals(path))
                         .map(FixContext.SourceFile::content).findFirst().orElse(null);
-                edits.add(new ProposedEdit(bundle, path, String.valueOf(edit.get("action")),
-                        String.valueOf(edit.get("reason")), before,
-                        edit.get("content") instanceof String content ? content : null));
+                String after = edit.get("content") instanceof String content ? content : null;
+                List<?> changes = TextEdits.of(edit);
+                if (!action.equals("delete") && changes != null) {
+                    TextEdits.Outcome outcome = TextEdits.apply(before, changes);
+                    if (outcome.text() == null) {
+                        Map<String, Object> refused = new LinkedHashMap<>();
+                        refused.put("bundle", bundle);
+                        refused.put("path", path);
+                        refused.put("message", "Not applied: " + outcome.problem() + ". Ask again.");
+                        notApplied.add(refused);
+                        continue;
+                    }
+                    after = outcome.text();
+                }
+                edits.add(new ProposedEdit(bundle, path, action, String.valueOf(edit.get("reason")), before, after));
             }
         }
         return edits;
@@ -915,7 +936,7 @@ final class UiService {
 
     /**
      * What the backend answers an editor request, kept nowhere: the page applies the edits to its buffers. Answers
-     * {@code {summary, warnings, edits}}, or {@code {error}} with the same message whatever the cause.
+     * {@code {summary, warnings, edits, notApplied}}, or {@code {error}} with the same message whatever the cause.
      *
      * @param files the files sent, to show each edit against what it replaces
      */
@@ -932,7 +953,9 @@ final class UiService {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("summary", String.valueOf(reply.get("summary")));
         result.put("warnings", reply.get("warnings") instanceof List<?> warnings ? warnings : List.of());
-        result.put("edits", edits(reply, files));
+        List<Map<String, Object>> notApplied = new ArrayList<>();
+        result.put("edits", edits(reply, files, notApplied));
+        result.put("notApplied", notApplied);
         return result;
     }
 

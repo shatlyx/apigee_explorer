@@ -54,6 +54,8 @@ class UiFixTest {
     private final List<Map<?, ?>> ported = new CopyOnWriteArrayList<>();
     private final List<Map<?, ?>> planned = new CopyOnWriteArrayList<>();
     private final List<Map<?, ?>> composed = new CopyOnWriteArrayList<>();
+    /** What the stand-in answers a compose with; null for its usual new policy. */
+    private volatile List<Map<String, Object>> composeEdits;
     private HttpServer backend;
     private UiServer server;
     private Path bundle;
@@ -137,6 +139,68 @@ class UiFixTest {
                 .anyMatch(f -> f.get("path").equals("proxies/default.xml") && unsaved.equals(f.get("content"))));
         assertEquals(saved, Files.readString(endpoint));
         assertFalse(Files.exists(bundle.resolve("policies/Q-New.xml")));
+    }
+
+    @Test
+    void appliesTheEditsOfAFileToItsUnsavedText() throws Exception {
+        Path endpoint = bundle.resolve("proxies/default.xml");
+        String saved = Files.readString(endpoint);
+        String unsaved = saved + "<!-- unsaved -->\n";
+        Map<String, Object> changed = new LinkedHashMap<>();
+        changed.put("bundle", "factorization-api");
+        changed.put("path", "proxies/default.xml");
+        changed.put("action", "replace");
+        changed.put("content", null);
+        changed.put("edits", List.of(Map.of("old", "<!-- unsaved -->", "new", "<!-- edited -->"),
+                Map.of("old", "<ProxyEndpoint name=\"default\">", "new", "<ProxyEndpoint name=\"default\">\n    <!-- top -->")));
+        changed.put("reason", "Comments");
+        composeEdits = List.of(changed);
+
+        HttpResponse<String> response = send("/api/editor/assist?id=factorization-api", "POST", Json.write(Map.of(
+                "request", "Add comments",
+                "buffers", List.of(Map.of("path", "proxies/default.xml", "content", unsaved)))));
+
+        assertEquals(200, response.statusCode(), response.body());
+        Map<?, ?> answer = (Map<?, ?>) Json.parse(response.body());
+        assertEquals(List.of(), answer.get("notApplied"));
+        Map<?, ?> edit = (Map<?, ?>) ((List<?>) answer.get("edits")).get(0);
+        assertEquals(unsaved, edit.get("before"));
+        assertEquals(unsaved.replace("<!-- unsaved -->", "<!-- edited -->")
+                .replace("<ProxyEndpoint name=\"default\">", "<ProxyEndpoint name=\"default\">\n    <!-- top -->"),
+                edit.get("after"));
+        assertEquals(true, ((Map<?, ?>) answer.get("review")).get("analyzed"), response.body());
+        assertEquals(saved, Files.readString(endpoint));
+    }
+
+    @Test
+    void refusesEditsThatDoNotMatchTheTextOnceWithAMessage() throws Exception {
+        Map<String, Object> ambiguous = new LinkedHashMap<>();
+        ambiguous.put("bundle", "factorization-api");
+        ambiguous.put("path", "proxies/default.xml");
+        ambiguous.put("action", "replace");
+        ambiguous.put("content", null);
+        ambiguous.put("edits", List.of(Map.of("old", "<Step>", "new", "<Step >")));
+        ambiguous.put("reason", "Everywhere");
+        Map<String, Object> absent = new LinkedHashMap<>(ambiguous);
+        absent.put("path", "policies/JS-Audit.xml");
+        absent.put("edits", List.of(Map.of("old", "<NotThere/>", "new", "")));
+        composeEdits = List.of(ambiguous, absent, Map.of("bundle", "factorization-api", "path", "policies/Q-New.xml",
+                "action", "create", "content", "<Quota name=\"Q-New\"/>\n", "reason", "New policy"));
+
+        HttpResponse<String> response = send("/api/editor/assist?id=factorization-api", "POST",
+                Json.write(Map.of("request", "Change the steps")));
+
+        assertEquals(200, response.statusCode(), response.body());
+        Map<?, ?> answer = (Map<?, ?>) Json.parse(response.body());
+        assertEquals(List.of("policies/Q-New.xml"),
+                ((List<?>) answer.get("edits")).stream().map(e -> ((Map<?, ?>) e).get("path")).toList());
+        List<?> notApplied = (List<?>) answer.get("notApplied");
+        assertEquals(2, notApplied.size(), response.body());
+        assertEquals(Map.of("bundle", "factorization-api", "path", "proxies/default.xml", "message",
+                "Not applied: the text to replace of change 1 occurs more than once in the file. Ask again."),
+                notApplied.get(0));
+        assertEquals("Not applied: the text to replace of change 1 is not in the file. Ask again.",
+                ((Map<?, ?>) notApplied.get(1)).get("message"));
     }
 
     @Test
@@ -526,7 +590,8 @@ class UiFixTest {
                 }
                 if (request.get("type").equals("compose")) {
                     composed.add((Map<?, ?>) request.get("body"));
-                    reply.put("body", Map.of("summary", "Adds a limit", "warnings", List.of(), "edits", List.of(
+                    reply.put("body", Map.of("summary", "Adds a limit", "warnings", List.of(), "edits",
+                            composeEdits != null ? composeEdits : List.of(
                             Map.of("bundle", "factorization-api", "path", "policies/Q-New.xml", "action", "create",
                                     "content", "<Quota name=\"Q-New\">", "reason", "New policy"))));
                     seal(exchange, opened, reply);

@@ -8,6 +8,7 @@ import dev.apigeemap.protocol.BackendClient;
 import dev.apigeemap.protocol.BackendConfig;
 import dev.apigeemap.protocol.Json;
 import dev.apigeemap.render.FixContextRenderer;
+import dev.apigeemap.ui.TextEdits;
 
 import java.io.BufferedReader;
 import java.io.Console;
@@ -152,8 +153,17 @@ final class FixCommand {
                     .map(SourceFile::content).findFirst().orElse(null);
             String after = edit.get("content") instanceof String content ? content : null;
             out.append('\n').append(edit.get("action")).append(' ').append(bundle).append('/').append(path)
-                    .append(": ").append(edit.get("reason")).append('\n')
-                    .append(Diffs.unified(path, before, after));
+                    .append(": ").append(edit.get("reason")).append('\n');
+            List<?> changes = TextEdits.of(edit);
+            if (!"delete".equals(edit.get("action")) && changes != null) {
+                TextEdits.Outcome outcome = TextEdits.apply(before, changes);
+                if (outcome.text() == null) {
+                    out.append("Not applied: ").append(outcome.problem()).append(". Ask again.\n");
+                    continue;
+                }
+                after = outcome.text();
+            }
+            out.append(Diffs.unified(path, before, after));
         }
         return out.toString();
     }
