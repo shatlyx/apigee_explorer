@@ -510,7 +510,8 @@ function reviewBar(id, scripts) {
       '. This can take a few minutes.');
     try {
       const result = await api.reviewScripts(id, !pending);
-      toast('Reviewed ' + result.reviewed + ' script(s): ' + result.remarks + ' finding(s)');
+      toast('Reviewed ' + result.reviewed + ' script(s): ' + result.remarks + ' finding(s)'
+        + (result.unreviewed ? '; ' + result.unreviewed + ' script(s) too large to review' : ''), !!result.unreviewed);
       reanalyze();
     } catch (error) {
       toast(error.message, true);

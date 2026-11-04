@@ -16,10 +16,11 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Which files of a proxy a compose request sends, when they do not all fit. The policies and endpoints always go, in
- * full: the request may change any of them. A file under {@code resources/} goes in full when the request needs it
- * (the file being edited, a file or policy the request names, a script of such a policy, a file asked for again) or
- * when it is small; the others are described by an outline worked out here, without asking the backend.
+ * Which files of a proxy a compose request sends, when they do not all fit. The endpoints always go, in full, and so
+ * do the files the request needs: the file being edited, a file or policy the request names, a file asked for again,
+ * the scripts of such a policy and the policies that run such a script, with the libraries they include. Then go the other policies, which the request
+ * may change, and the small resources, smallest first, while there is room; the others are described by an outline
+ * worked out here, without asking the backend.
  *
  * @param sent     the paths sent in full, in the order of the files
  * @param unsent   the paths left out, each with its outline, as the model reads them; empty when nothing is left out
@@ -32,6 +33,9 @@ record ComposeSelection(List<String> sent, Map<String, String> unsent) {
     private static final Pattern URL = Pattern.compile("<(?:ResourceURL|IncludeURL)>\\s*(\\w+)://([^<\\s]+)\\s*<");
     private static final Pattern XML_NAME = Pattern.compile(
             "<(?:\\w+:)?(element|complexType|simpleType|operation|service)\\b[^>]*?\\bname=\"([^\"]+)\"");
+    private static final Pattern MAIN = Pattern.compile("<ResourceURL>\\s*(\\w+)://([^<\\s]+)\\s*<");
+    private static final Pattern POLICY = Pattern.compile(
+            "<([A-Za-z][\\w-]*)(?=[\\s>/])(?:[^>]*?\\bname=\"([^\"]+)\")?");
     private static final Pattern VARIABLE = Pattern.compile("\\b(get|set)Variable\\(\\s*['\"]([^'\"]+)['\"]");
 
     /** Thrown when the files the request needs are too large on their own. */
@@ -58,26 +62,39 @@ record ComposeSelection(List<String> sent, Map<String, String> unsent) {
         for (Map.Entry<String, String> file : files.entrySet()) {
             String path = file.getKey();
             boolean named = mentions(asked, name(path)) || mentions(asked, stem(path));
-            boolean policy = path.startsWith("policies/");
-            if (!path.startsWith("resources/")) wanted.add(path);
+            if (!path.startsWith("resources/") && !path.startsWith("policies/")) wanted.add(path);
             if (focus.contains(path) || include.contains(path) || named) {
                 wanted.add(path);
-                if (policy) wanted.addAll(resources(file.getValue()));
+                if (path.startsWith("policies/")) wanted.addAll(resources(file.getValue()));
+            }
+        }
+        // the policies that run a script the request is about, and the libraries they include with it; not every
+        // policy that includes a library the request is about, which may be all of them
+        Set<String> scripts = Set.copyOf(wanted);
+        for (Map.Entry<String, String> file : files.entrySet()) {
+            if (!file.getKey().startsWith("policies/") || wanted.contains(file.getKey())) continue;
+            Matcher main = MAIN.matcher(file.getValue());
+            if (main.find() && scripts.contains("resources/" + main.group(1) + "/" + main.group(2))) {
+                wanted.add(file.getKey());
+                wanted.addAll(resources(file.getValue()));
             }
         }
         wanted.retainAll(files.keySet());
         long size = wanted.stream().mapToLong(p -> files.get(p).length()).sum();
         if (size > budget) {
-            throw new TooLarge("Even the policies, endpoints and files this request needs are too large to be sent ("
+            throw new TooLarge("Even the endpoints and the files this request needs are too large to be sent ("
                     + size + " characters, at most " + budget + "): close or name fewer large files");
         }
-        List<String> rest = files.keySet().stream().filter(p -> !wanted.contains(p))
-                .sorted(Comparator.comparingInt(p -> files.get(p).length())).toList();
-        for (String path : rest) {
-            int length = files.get(path).length();
-            if (length > SMALL || size + length > budget) break;
-            wanted.add(path);
-            size += length;
+        // then the other policies, which the request may change, and the small resources, smallest first
+        for (String folder : List.of("policies/", "resources/")) {
+            List<String> rest = files.keySet().stream().filter(p -> p.startsWith(folder) && !wanted.contains(p))
+                    .sorted(Comparator.comparingInt(p -> files.get(p).length())).toList();
+            for (String path : rest) {
+                int length = files.get(path).length();
+                if (folder.equals("resources/") && length > SMALL || size + length > budget) break;
+                wanted.add(path);
+                size += length;
+            }
         }
         List<String> sent = new ArrayList<>();
         Map<String, String> unsent = new LinkedHashMap<>();
@@ -131,6 +148,11 @@ record ComposeSelection(List<String> sent, Map<String, String> unsent) {
             } catch (RuntimeException e) {
                 parts.add("not valid JSON");
             }
+        } else if (path.startsWith("policies/")) {
+            Matcher root = POLICY.matcher(text);
+            if (root.find()) parts.add(root.group(1) + " policy" + (root.group(2) == null ? "" : " " + root.group(2)));
+            List<String> used = resources(text);
+            if (!used.isEmpty()) parts.add("uses " + join(used));
         } else if (lower.endsWith(".xsd") || lower.endsWith(".wsdl") || lower.endsWith(".xml")) {
             Map<String, Set<String>> kinds = new LinkedHashMap<>();
             Matcher name = XML_NAME.matcher(text);

@@ -48,6 +48,8 @@ class UiFixTest {
     private final HttpClient http = HttpClient.newHttpClient();
     private final List<String> tokens = new CopyOnWriteArrayList<>();
     private final List<Map<?, ?>> reviews = new CopyOnWriteArrayList<>();
+    /** The scripts the fake backend says it could not review. */
+    private volatile List<String> unreviewed = List.of();
     private final List<Map<?, ?>> groupedFixes = new CopyOnWriteArrayList<>();
     private final List<Map<?, ?>> triages = new CopyOnWriteArrayList<>();
     private final List<Map<?, ?>> documented = new CopyOnWriteArrayList<>();
@@ -247,6 +249,23 @@ class UiFixTest {
         assertEquals(Map.of("error", BackendClient.UNAVAILABLE), Json.parse(askFix().body()));
         assertEquals(1, tokens.size(), "the request is sent all the same");
         assertEquals(22, tokens.get(0).length(), "looks like a real token");
+    }
+
+    @Test
+    void leavesTheScriptsTheBackendCouldNotReviewToReviewAgain() throws Exception {
+        int total = ((Number) ((Map<?, ?>) detail().get("scripts")).get("total")).intValue();
+        unreviewed = List.of("factorization-api/resources/jsc/broken.js");
+
+        assertEquals(Map.of("reviewed", (double) total - 1, "remarks", 0.0, "unreviewed", 1.0),
+                Json.parse(post("/api/review?id=factorization-api").body()), "its remark is not kept either");
+        Map<?, ?> detail = detail();
+        assertEquals((double) total - 1, ((Map<?, ?>) detail.get("scripts")).get("reviewed"));
+        assertFalse(findings(detail).stream().anyMatch(f -> f.get("rule").equals("REV-01")));
+
+        unreviewed = List.of();
+        assertEquals(Map.of("reviewed", 1.0, "remarks", 1.0), Json.parse(post("/api/review?id=factorization-api").body()));
+        List<?> sent = (List<?>) reviews.get(1).get("scripts");
+        assertEquals(1, sent.size(), "only the one left is sent again");
     }
 
     @Test
@@ -578,7 +597,7 @@ class UiFixTest {
                 reply.put("ok", true);
                 if (request.get("type").equals("review")) {
                     reviews.add((Map<?, ?>) request.get("body"));
-                    reply.put("body", Map.of("remarks", List.of(
+                    reply.put("body", Map.of("unreviewed", unreviewed, "remarks", List.of(
                             Map.of("bundle", "factorization-api", "file", "resources/jsc/broken.js", "line", 2,
                                     "category", "SECURITY", "severity", "ERROR", "title", "Secret in the code",
                                     "message", "A password is written in the script.", "action", "Read it from a KVM."),

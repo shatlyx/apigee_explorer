@@ -1055,12 +1055,19 @@ final class UiService {
             ScriptReviews.Remark remark = ScriptReviews.remark(map);
             if (of == null || remark == null) continue;
             of.add(remark);
-            count++;
         }
+        // the scripts the backend could not review are left to review again, not kept as without problems
+        Set<Object> unreviewed = reply.get("unreviewed") instanceof List<?> l ? new HashSet<>(l) : Set.of();
+        int reviewed = 0;
         for (ScriptReviewRequest.Target target : targets) {
-            reviews.put(target.fingerprint(), remarks.get(target.bundle() + "/" + target.file()));
+            if (unreviewed.contains(target.bundle() + "/" + target.file())) continue;
+            List<ScriptReviews.Remark> of = remarks.get(target.bundle() + "/" + target.file());
+            reviews.put(target.fingerprint(), of);
+            reviewed++;
+            count += of.size();
         }
-        return Map.of("reviewed", targets.size(), "remarks", count);
+        return unreviewed.isEmpty() ? Map.of("reviewed", reviewed, "remarks", count)
+                : Map.of("reviewed", reviewed, "remarks", count, "unreviewed", unreviewed.size());
     }
 
     void rejectFix(String key) {

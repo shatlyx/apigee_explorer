@@ -45,8 +45,9 @@ class ComposeSelectionTest {
                 "à quoi sert selectIdp.js, quels problèmes présente-t-il ?", Set.of(), Set.of(), 100_000);
 
         assertEquals(List.of("policies/JS-SelectIdp.xml", "policies/AM-Set.xml", "proxies/default.xml",
-                "resources/jsc/selectIdp.js", "resources/jsc/small.js"), selection.sent());
-        assertEquals(Set.of("resources/jsc/lib.js", "resources/xsd/order.xsd"), selection.unsent().keySet());
+                "resources/jsc/lib.js", "resources/jsc/selectIdp.js", "resources/jsc/small.js"), selection.sent(),
+                "with the policy that runs it and the library it includes");
+        assertEquals(Set.of("resources/xsd/order.xsd"), selection.unsent().keySet());
         assertTrue(selection.unsent().get("resources/xsd/order.xsd").contains("element Order; complexType Line"),
                 selection.manifest());
     }
@@ -94,6 +95,26 @@ class ComposeSelectionTest {
         assertEquals(List.of("resources/xsd/order.xsd"),
                 selection.named("[Send resources/xsd/order.xsd in full to check the types]"));
         assertEquals(List.of("resources/jsc/lib.js"), selection.named("lib.js decides it"));
+    }
+
+    @Test
+    void outlinesThePoliciesThatDoNotFit() throws Exception {
+        Map<String, String> files = proxy();
+        for (int i = 0; i < 5; i++) {
+            files.put("policies/SC-Call" + i + ".xml", "<ServiceCallout name=\"SC-Call" + i + "\"><!--"
+                    + "x".repeat(30_000) + "--></ServiceCallout>");
+        }
+        ComposeSelection selection = ComposeSelection.of(files, "à quoi sert selectIdp.js ?", Set.of(), Set.of(),
+                150_000);
+
+        assertTrue(selection.sent().containsAll(List.of("policies/JS-SelectIdp.xml", "resources/jsc/selectIdp.js",
+                "resources/jsc/lib.js", "proxies/default.xml", "policies/AM-Set.xml")), selection.sent().toString());
+        assertTrue(selection.unsent().keySet().stream().filter(p -> p.startsWith("policies/SC-")).count() >= 4,
+                selection.manifest());
+        assertTrue(selection.unsent().get("policies/SC-Call4.xml").contains("ServiceCallout policy SC-Call4"),
+                selection.manifest());
+        assertTrue(ComposeSelection.outline("policies/JS-SelectIdp.xml", files.get("policies/JS-SelectIdp.xml"))
+                .contains("Javascript policy JS-SelectIdp; uses resources/jsc/lib.js, resources/jsc/selectIdp.js"));
     }
 
     @Test
