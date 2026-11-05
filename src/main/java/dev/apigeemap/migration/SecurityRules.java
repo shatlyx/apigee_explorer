@@ -24,10 +24,14 @@ final class SecurityRules {
 
     static final Pattern SECRET = Pattern.compile(
             "(?i)(password|passwd|pwd|secret|api[_.-]?key|client[_.-]?secret|token|credential|authorization)");
-    /** {@code password = "literal"} in JavaScript, with at least 6 characters of value. */
-    private static final Pattern JS_SECRET = Pattern.compile(
-            "(?i)[\"']?([\\w.-]*(?:password|passwd|secret|api[_-]?key|client[_-]?secret|token)[\\w.-]*)[\"']?"
-                    + "\\s*[:=]\\s*[\"']([^\"'{}\\s]{6,})[\"']");
+    /**
+     * {@code password = "literal"} in JavaScript, with at least 6 characters of value. A match starts at a quote or
+     * where a name starts: starting inside a name finds nothing an earlier start would not, and trying every place of a
+     * long name made large scripts slow (see {@code JsSecretPatternTest}).
+     */
+    static final Pattern JS_SECRET = Pattern.compile(
+            "(?i)(?:[\"']|(?<![\\w.-]))([\\w.-]*(?:password|passwd|secret|api[_-]?key|client[_-]?secret|token)[\\w.-]*)"
+                    + "[\"']?\\s*[:=]\\s*[\"']([^\"'{}\\s]{6,})[\"']");
     private static final Pattern URL_CREDENTIALS = Pattern.compile("://[^/@{}\\s]+:[^/@\\s]+@");
 
     private static final Set<String> AUTHENTICATION = Set.of("VerifyAPIKey", "OAuthV2", "VerifyJWT", "VerifyJWS",

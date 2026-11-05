@@ -31,6 +31,19 @@ class VariableFlowTest {
     Path tmp;
 
     @Test
+    void theKeysOfAWriteAndAReadMatchExactlyWhenTheWriteSetsTheRead() {
+        List<String> names = List.of("a", "a.b", "a.b.c", "a.*", "a.b.*", "ab", "ab.c", "b.a", "*",
+                "request.header.X-Id", "request.header.x-id", "request.header.X-ID.values", "request.header.*",
+                "request.header", "request.headers.X", "private.backend.password", "private.*", "flow.x.y.z");
+        for (String write : names) {
+            for (String read : names) {
+                boolean keyed = VariableFlow.readKeys(read).contains(VariableFlow.writeKey(write));
+                assertEquals(VariableFlow.sets(write, read), keyed, write + " sets " + read);
+            }
+        }
+    }
+
+    @Test
     void linksEachReadToTheStepsThatSetItBefore() throws IOException {
         VariableFlow flow = VariableFlow.of(new BundleAnalyzer(SharedFlowRepository.scan(List.of(SHARED_FLOWS)))
                 .analyze(BundleLocator.locate(ORDERS)));

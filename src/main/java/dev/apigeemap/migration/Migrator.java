@@ -14,6 +14,7 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -68,10 +69,27 @@ public final class Migrator {
         void applied(BundleReport bundle, RuleInfo rule, List<String> changes) throws IOException;
     }
 
+    /**
+     * Told after each rule of each bundle, with the time it took. It may throw to stop the migration there: the
+     * exception reaches the caller of {@link #migrate}, and nothing is written.
+     */
+    @FunctionalInterface
+    public interface Watch {
+        Watch NONE = (bundle, rule, nanos) -> {
+        };
+
+        void ran(String bundle, String rule, long nanos);
+    }
+
     /** @param outputDir where to write the migrated bundles; null for a dry run (report only) */
     public MigrationReport migrate(BundleReport root, Path outputDir) throws IOException {
+        return migrate(root, outputDir, Watch.NONE);
+    }
+
+    /** As {@link #migrate(BundleReport, Path)}, telling {@code watch} of each rule. */
+    public MigrationReport migrate(BundleReport root, Path outputDir, Watch watch) throws IOException {
         if (outputDir != null) checkEmpty(outputDir);
-        return run(root, outputDir, null, null);
+        return run(root, outputDir, null, null, watch, null);
     }
 
     /**
@@ -79,20 +97,34 @@ public final class Migrator {
      * changes of each rule before the next one runs, so that each rule can be recorded as a step of its own.
      */
     public MigrationReport migrateInPlace(BundleReport root, AppliedRule listener) throws IOException {
-        return run(root, null, null, listener);
+        return run(root, null, null, listener, Watch.NONE, null);
     }
 
     /**
      * Applies the auto-fixes of some findings only, picked by their rule, bundle and location, as
-     * {@link #migrateInPlace} does; the other auto-fixes leave the bundles as they are.
+     * {@link #migrateInPlace} does; the other auto-fixes leave the bundles as they are. Only the rules of those
+     * findings run, so the report holds their findings only.
      */
     public MigrationReport fixInPlace(BundleReport root, Collection<Finding> only, AppliedRule listener)
             throws IOException {
-        return run(root, null, only, listener);
+        // a rule none of them is about leaves the bundles as they are
+        return run(root, null, only, listener, Watch.NONE, rulesOf(only));
     }
 
-    private MigrationReport run(BundleReport root, Path outputDir, Collection<Finding> only, AppliedRule listener)
-            throws IOException {
+    /**
+     * A dry run of these rules only: what {@link #fixInPlace} sees for findings of them, as it runs no other rule.
+     * Much faster than {@link #migrate} to check that findings are still reported before fixing them.
+     */
+    public MigrationReport check(BundleReport root, Set<String> rules) throws IOException {
+        return run(root, null, null, null, Watch.NONE, Set.copyOf(rules));
+    }
+
+    private static Set<String> rulesOf(Collection<Finding> findings) {
+        return findings.stream().map(Finding::rule).collect(Collectors.toSet());
+    }
+
+    private MigrationReport run(BundleReport root, Path outputDir, Collection<Finding> only, AppliedRule listener,
+                                Watch watch, Set<String> rules) throws IOException {
 
         Map<String, BundleReport> sharedFlows = new LinkedHashMap<>();
         MigrationContext.collect(root, sharedFlows);
@@ -110,8 +142,11 @@ public final class Migrator {
             Map<String, FileChange> applied = new LinkedHashMap<>();
             for (Rule rule : RULES) {
                 if (options.disabledRules().contains(rule.id())) continue;
+                if (rules != null && !rules.contains(rule.id())) continue;
                 int before = workspace.changes().size();
+                long started = System.nanoTime();
                 ctx.run(rule);
+                watch.ran(bundle.name(), rule.id(), System.nanoTime() - started);
                 if (listener != null && workspace.hasPendingChanges()) {
                     for (FileChange change : workspace.applyInPlace()) {
                         FileChange first = applied.get(change.path());

@@ -52,6 +52,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
@@ -150,6 +151,7 @@ final class UiService {
     private final TokenStore token = new TokenStore();
     private final Map<String, Proposal> proposals = new LinkedHashMap<>();
     private final Running running = new Running();
+    private final LatestRun analyses = new LatestRun();
     private Settings settings;
 
     /**
@@ -348,23 +350,53 @@ final class UiService {
             status.put("running", running.since("review", id).map(Instant::toString).orElse(null));
             m.put("scripts", status);
         }
-        return withRunning("analyze", id, m);
+        analyses.since(id).ifPresent(since -> m.put("running", since.toString()));
+        return m;
     }
 
-    /** Analyzes the proxy and answers as {@link #proxy}. While it runs, asking again waits for it. */
+    /**
+     * Analyzes the proxy and answers as {@link #proxy}. An ask made while it runs stops it and starts it again, and
+     * both asks answer the new run ({@link LatestRun}), so a change made meanwhile is never missed. Logs how long it
+     * took and its slowest rules.
+     */
     Map<String, Object> analyzeProxy(String id) throws IOException {
-        return running.run("analyze", id, () -> {
+        return analyzeProxy(id, false);
+    }
+
+    /** As {@link #analyzeProxy(String)}; with {@code join}, waits for the analysis in progress instead of stopping it. */
+    Map<String, Object> analyzeProxy(String id, boolean join) throws IOException {
+        return analyses.run(id, stale -> {
             Settings s = settings();
             Path dir = resolve(s, id);
             try {
+                long started = System.nanoTime();
                 BundleReport analysis = analyze(s, id);
-                record(s, dir, analysis, migrator(s).migrate(analysis, null), new HashMap<>());
+                long files = System.nanoTime() - started;
+                if (stale.getAsBoolean()) throw new LatestRun.Superseded();
+                Map<String, Long> rules = new HashMap<>();
+                MigrationReport migration = migrator(s).migrate(analysis, null, (bundle, rule, nanos) -> {
+                    rules.merge(rule, nanos, Long::sum);
+                    if (stale.getAsBoolean()) throw new LatestRun.Superseded();
+                });
+                record(s, dir, analysis, migration, new HashMap<>());
+                System.err.println(timing(id, System.nanoTime() - started, files, rules));
             } catch (IOException | RuntimeException e) {
-                recordFailure(s, dir, e);
+                if (!(e instanceof LatestRun.Superseded)) recordFailure(s, dir, e);
                 throw e;
             }
             return proxy(id);
-        });
+        }, join);
+    }
+
+    /** {@code analysis of <id>: 2300 ms (files 400 ms, rules 1900 ms; slowest DES-12 900 ms, ...)}. */
+    static String timing(String id, long total, long files, Map<String, Long> rules) {
+        long all = rules.values().stream().mapToLong(Long::longValue).sum();
+        String slowest = rules.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed()).limit(3)
+                .map(e -> e.getKey() + " " + e.getValue() / 1_000_000 + " ms")
+                .collect(Collectors.joining(", "));
+        return "analysis of " + id + ": " + total / 1_000_000 + " ms (files " + files / 1_000_000 + " ms, rules "
+                + all / 1_000_000 + " ms" + (slowest.isEmpty() ? "" : "; slowest " + slowest) + ")";
     }
 
     String mapHtml(String id) throws IOException {
@@ -665,7 +697,8 @@ final class UiService {
      * Applies the auto-fixes of the findings of {@code picked} ({@code {findings: [{bundle, rule, location}]}}) to
      * the source bundles of the proxy and to the shared flows it calls; the other auto-fixes wait. Changes made by
      * hand before are recorded first, as their own step; then each rule that changed a bundle is one step of its
-     * history. Answers the steps.
+     * history. Answers the steps. Only the rules of the picked findings run, and the proxy is left outdated: its page
+     * analyzes it again in the background.
      */
     synchronized List<SourceHistory.Step> applyAutoFixes(String id, Map<?, ?> picked) throws IOException {
         Settings s = settings();
@@ -674,7 +707,12 @@ final class UiService {
         if (!(picked.get("findings") instanceof List<?> list) || list.isEmpty()) {
             throw new UiException(400, "No finding picked");
         }
-        List<Finding> all = migrator.migrate(analysis, null).findings();
+        // only the rules of the picked findings: the others change nothing (Migrator.fixInPlace)
+        Set<String> rules = new HashSet<>();
+        for (Object item : list) {
+            if (item instanceof Map<?, ?> map && map.get("rule") instanceof String rule) rules.add(rule);
+        }
+        List<Finding> all = migrator.check(analysis, rules).findings();
         List<Finding> only = new ArrayList<>();
         for (Object item : list) {
             Finding finding = find(all, item instanceof Map<?, ?> map ? map : Map.of());
@@ -700,8 +738,7 @@ final class UiService {
         } finally {
             histories.values().forEach(SourceHistory::close);
         }
-        BundleReport fixed = analyze(s, id);
-        record(s, resolve(s, id), fixed, migrator.migrate(fixed, null), new HashMap<>());
+        // not analyzed again here: the page asks for it without waiting (analyzeProxy), and the proxy is outdated
         return steps;
     }
 

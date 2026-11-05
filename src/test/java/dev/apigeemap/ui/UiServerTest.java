@@ -340,6 +340,7 @@ class UiServerTest {
         assertTrue(Files.readString(proxy.resolve("targets/legacy.xml")).contains("ts-legacy-orders-internal-8080"));
         assertFalse(Files.exists(proxy.resolve("policies/KVM-Legacy-Unused.xml")));
         assertEquals(endpoint, Files.readString(proxy.resolve("proxies/default.xml")), "HYB-02 was not ticked");
+        assertEquals(200, post("/api/proxy/analyze?id=orders-api").statusCode());
         assertEquals(1.0, listed("orders-api").get("autoFixes"));
         assertEquals(404, send("POST", "/api/autofix?id=orders-api", "{\"findings\": [" + des01 + "]}", true)
                 .statusCode(), "fixed already");
@@ -349,6 +350,7 @@ class UiServerTest {
                 "{\"findings\": [" + hyb02 + "]}", true).body())).size());
         assertFalse(Files.readString(proxy.resolve("proxies/default.xml")).contains("<VirtualHost>"));
         assertFalse(Files.exists(tmp.resolve("out")), "nothing is written to the output folder");
+        assertEquals(200, post("/api/proxy/analyze?id=orders-api").statusCode());
         assertEquals(0.0, listed("orders-api").get("autoFixes"));
     }
 

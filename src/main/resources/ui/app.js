@@ -47,7 +47,7 @@ const api = {
   proxies: () => request('GET', '/api/proxies'),
   analyzeProxies: all => request('POST', '/api/proxies/analyze' + (all ? '?all=true' : '')),
   proxy: id => request('GET', '/api/proxy?id=' + encodeURIComponent(id)),
-  analyzeProxy: id => request('POST', '/api/proxy/analyze?id=' + encodeURIComponent(id)),
+  analyzeProxy: (id, join) => request('POST', '/api/proxy/analyze?id=' + encodeURIComponent(id) + (join ? '&join=true' : '')),
   apply: (id, overwrite) => request('POST', '/api/apply?id=' + encodeURIComponent(id) + (overwrite ? '&overwrite=true' : '')),
   autoFix: (id, findings) => request('POST', '/api/autofix?id=' + encodeURIComponent(id),
     {findings: findings.map(f => ({bundle: f.bundle, rule: f.rule, location: f.location}))}),
@@ -355,17 +355,78 @@ function findingKey(f) {
   return f.bundle + '\n' + f.rule + '\n' + f.location;
 }
 
-/** After a change made from the page of a proxy: analyzes it again, then shows it. */
-async function reanalyze() {
-  if (location.hash.startsWith('#/proxy/')) {
-    view.replaceChildren(h('div', {class: 'loading'}, 'Analyzing…'));
-    try {
-      await api.analyzeProxy(decodeURIComponent(location.hash.slice('#/proxy/'.length)));
-    } catch (error) {
-      toast(error.message, true);
-    }
+/**
+ * The analyses the page started after a change, by proxy id: {since, asks, findings, files, bundles, rules}, what the
+ * changes touched. While one runs, the page shows the previous analysis with those findings greyed out.
+ */
+const analyzing = {};
+
+/**
+ * After a change made from the page of a proxy: analyzes it again in the background and shows the page at once, the
+ * findings and files the change touched greyed out ({@code change}: findings, files as bundle/path, bundles, rules)
+ * until the analysis ends. A change made meanwhile restarts it on the server, so the last answer is the one shown.
+ */
+function reanalyze(change = {}) {
+  const id = shownProxy();
+  if (id === null) {
+    route();
+    return;
   }
+  const run = analyzing[id] || (analyzing[id] = {since: new Date().toISOString(), asks: 0, findings: new Set(),
+    files: new Set(), bundles: new Set(), rules: new Set()});
+  const ask = ++run.asks;
+  (change.findings || []).forEach(f => {
+    run.findings.add(findingKey(f));
+    (f.subjects || []).forEach(s => run.files.add(s.bundle + '/' + s.file));
+  });
+  (change.files || []).forEach(file => run.files.add(file));
+  (change.bundles || []).forEach(bundle => run.bundles.add(bundle));
+  (change.rules || []).forEach(rule => run.rules.add(rule));
+  showActivity();
+  const done = error => {
+    if (analyzing[id] !== run || run.asks !== ask) return;
+    delete analyzing[id];
+    showActivity();
+    if (error) toast('Analysis failed: ' + error.message, true);
+    else if (shownProxy() !== id) toast(id + ' analyzed');
+    refreshProxy(id);
+  };
+  api.analyzeProxy(id).then(() => done(null), done);
   route();
+}
+
+/** The id of the proxy whose page is shown, or null. */
+function shownProxy() {
+  return location.hash.startsWith('#/proxy/') ? decodeURIComponent(location.hash.slice('#/proxy/'.length)) : null;
+}
+
+/** Shows the proxy again if its page is open, once no dialog is open on it. */
+function refreshProxy(id) {
+  if (shownProxy() !== id) return;
+  const dialog = document.querySelector('dialog[open]');
+  if (dialog) dialog.addEventListener('close', () => refreshProxy(id), {once: true});
+  else route();
+}
+
+/** The analyses in progress, in the top bar, on every page. */
+function showActivity() {
+  const bar = document.getElementById('activity');
+  if (!bar) return;
+  const ids = Object.keys(analyzing);
+  bar.hidden = !ids.length;
+  bar.replaceChildren(...ids.map(id => h('a', {href: '#/proxy/' + encodeURIComponent(id),
+      title: 'Analyzing ' + id + ' after your change'},
+    h('span', {class: 'spinner'}), ' Analyzing ', id.split('/').pop(), ' · ', elapsed(analyzing[id].since))));
+}
+
+/** How a finding stands while the page analyzes the proxy again: 'changed' by the change, 'affected', or ''. */
+function pendingState(id, f) {
+  const run = analyzing[id];
+  if (!run) return '';
+  if (run.findings.has(findingKey(f))) return 'changed';
+  const files = f.subjects || [];
+  return run.rules.has(f.rule) || run.bundles.has(f.bundle)
+    || files.some(s => run.files.has(s.bundle + '/' + s.file) || run.bundles.has(s.bundle)) ? 'affected' : '';
 }
 
 async function proxyView(id) {
@@ -378,20 +439,27 @@ async function proxyView(id) {
   const status = h('p', {class: 'meta'}, summary.analyzed ? 'Analyzed ' + new Date(summary.analyzed).toLocaleString() : 'Not analyzed yet',
     ' ', outdatedBadge(summary));
 
-  /** Analyzes the proxy, or waits for the analysis running since {@code since}. */
+  /** Analyzes the proxy, or waits for the analysis running since {@code since} without restarting it. */
   async function analyze(since) {
     analyzeButton.disabled = true;
     analyzeButton.replaceChildren(h('span', {class: 'spinner'}), ' Analyzing…');
     status.replaceChildren('Analyzing for ', elapsed(since));
     try {
-      await api.analyzeProxy(id);
+      await api.analyzeProxy(id, !!since);
       if (analyzeButton.isConnected) route();
     } catch (error) {
       toast(error.message, true);
       if (analyzeButton.isConnected) route();
     }
   }
-  if (detail.running) analyze(detail.running);
+  const pending = analyzing[id];
+  if (pending) {
+    analyzeButton.disabled = true;
+    analyzeButton.replaceChildren(h('span', {class: 'spinner'}), ' Analyzing…');
+    status.replaceChildren('Analyzing after your change for ', elapsed(pending.since));
+  } else if (detail.running) {
+    analyze(detail.running);
+  }
 
   if (!migration) {
     page.append(h('div', {class: 'head'},
@@ -426,6 +494,11 @@ async function proxyView(id) {
     page.append(h('p', {class: 'meta'}, h('span', {class: 'badge ok'}, 'Migrated'), ' ', h('span', {class: 'mono'}, detail.outputDir)));
   }
 
+  if (pending) {
+    page.append(h('div', {class: 'updating', role: 'status'}, h('span', {class: 'spinner'}),
+      h('span', {}, ' Updating the findings after your change (', elapsed(pending.since), '). Below is the previous analysis: ',
+        'what the change touched is greyed out until it ends; the rest can be used.')));
+  }
   page.append(cards([
     [summary.errors, 'Errors'], [summary.warnings, 'Warnings'], [summary.infos, 'Info'],
     [summary.autoFixes, 'Fixable automatically'], [summary.manual, 'Manual'],
@@ -512,7 +585,7 @@ function reviewBar(id, scripts) {
       const result = await api.reviewScripts(id, !pending);
       toast('Reviewed ' + result.reviewed + ' script(s): ' + result.remarks + ' finding(s)'
         + (result.unreviewed ? '; ' + result.unreviewed + ' script(s) too large to review' : ''), !!result.unreviewed);
-      reanalyze();
+      reanalyze({rules: ['REV-01']});
     } catch (error) {
       toast(error.message, true);
       button.disabled = false;
@@ -538,10 +611,12 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
         value => { detailState.category = value; render(); }),
       chips([['', 'Any fix'], ['AUTO', 'Automatic'], ['MANUAL', 'Manual']], detailState.fix,
         value => { detailState.fix = value; render(); }));
-    const shown = findings
+    const visible = findings
       .filter(f => (!detailState.severity || f.severity === detailState.severity)
         && (!detailState.category || f.category === detailState.category)
         && (!detailState.fix || f.fix === detailState.fix));
+    // the findings a change still being analyzed touched are shown, but nothing acts on them
+    const shown = visible.filter(f => !pendingState(id, f));
     const manual = shown.filter(f => f.fix === 'MANUAL');
     const likely = triaged[id] || new Map();
     const flagged = shown.filter(f => likely.has(findingKey(f)));
@@ -576,8 +651,8 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
       h('div', {class: 'row-actions'},
         h('button', {type: 'button', onclick: () => { flagged.forEach(f => likely.delete(findingKey(f))); render(); }}, 'Keep all'),
         h('button', {type: 'button', class: 'primary', onclick: () => confirmAll(flagged)}, 'Confirm all')))] : []));
-    const rows = shown
-      .flatMap(f => [h('tr', {class: likely.has(findingKey(f)) ? 'flagged' : ''},
+    const rows = visible
+      .flatMap(f => pendingState(id, f) ? [pendingRow(f)] : [h('tr', {class: likely.has(findingKey(f)) ? 'flagged' : ''},
         h('td', {}, severity(f.severity)),
         h('td', {class: 'nowrap'}, h('code', {}, f.rule)),
         h('td', {}, f.bundle),
@@ -611,6 +686,21 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
     body.replaceChildren(...(rows.length ? rows : [h('tr', {}, h('td', {colspan: 8, class: 'sub'}, 'No finding matches the filter.'))]));
   }
 
+  /** A finding a change still being analyzed touched: struck out when the change was about it, greyed otherwise. */
+  function pendingRow(f) {
+    const changed = pendingState(id, f) === 'changed';
+    return h('tr', {class: 'pending ' + (changed ? 'changed' : 'affected'),
+        title: changed ? 'Changed: the analysis in progress tells whether it is gone' : 'Its file changed: the analysis in progress updates it'},
+      h('td', {}, severity(f.severity)),
+      h('td', {class: 'nowrap'}, h('code', {}, f.rule)),
+      h('td', {}, f.bundle),
+      h('td', {}, h('code', {}, f.location)),
+      h('td', {}, f.message),
+      h('td', {class: 'sub'}, f.action),
+      h('td', {class: 'nowrap'}, fixBadge(f, applied)),
+      h('td', {class: 'sub nowrap'}, h('span', {class: 'spinner'}), changed ? ' Changed' : ' Updating'));
+  }
+
   async function triage(button, picked) {
     button.disabled = true;
     button.replaceChildren(h('span', {class: 'spinner'}), ' Triaging…');
@@ -633,7 +723,7 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
       await api.markFalsePositive(f, triaged[id].get(findingKey(f)));
       triaged[id].delete(findingKey(f));
       toast(f.rule + ' at ' + f.bundle + ' · ' + f.location + ' marked as a false positive');
-      reanalyze();
+      reanalyze({findings: [{...f, subjects: []}]});
     } catch (error) {
       toast(error.message, true);
     }
@@ -655,7 +745,7 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
       picked.forEach(f => unticked[id].delete(findingKey(f)));
       toast((steps.length ? 'Written to the sources, recorded as step ' + steps.map(s => s.id).join(', ')
         : 'Nothing to change in the sources'));
-      reanalyze();
+      reanalyze({findings: picked});
     } catch (error) {
       toast(error.message, true);
       button.disabled = false;
@@ -679,7 +769,7 @@ function findingsPanel(id, findings, applied, falsePositives, stale) {
     } catch (error) {
       toast(error.message, true);
     }
-    reanalyze();
+    reanalyze({findings: flagged.map(f => ({...f, subjects: []}))});
   }
 
   render();
@@ -700,7 +790,7 @@ async function markFalsePositive(finding) {
   try {
     await api.markFalsePositive(finding, reason);
     toast(finding.rule + ' at ' + where + ' marked as a false positive');
-    reanalyze();
+    reanalyze({findings: [{...finding, subjects: []}]});
   } catch (error) {
     toast(error.message, true);
   }
@@ -863,8 +953,7 @@ async function proposalDialog(title, subtitle, waiting, ask, nothing) {
       toast((proposal.approach ? 'Port' : 'Fix') + ' written to the sources'
         + (steps.length ? ', recorded as step ' + steps.map(s => s.id).join(', ') : '')
         + (proposal.service ? '; service written to ' + proposal.service.folder : ''));
-      detailState.tab = 'history';
-      reanalyze();
+      reanalyze({findings: proposal.findings || [], files: proposal.edits.map(edit => edit.bundle + '/' + edit.path)});
     } catch (error) {
       toast(error.message, true);
       accept.textContent = 'Accept';
@@ -925,7 +1014,7 @@ function stepView(id, bundle, step) {
     try {
       const done = await api.revertStep(id, bundle.bundle, step.id);
       toast('Undone, recorded as step ' + done.id);
-      reanalyze();
+      reanalyze({files: (done.files || []).map(file => bundle.bundle + '/' + file)});
     } catch (error) {
       toast(error.message, true);
       button.disabled = false;

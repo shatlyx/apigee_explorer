@@ -465,10 +465,11 @@ final class DesignRules {
         }
         String caveat = (dynamic ? " Some scripts set variables with computed names, which this check cannot"
                 + " follow." : "") + (java ? " Java callouts are not inspected." : "");
+        Set<String> keys = written.stream().map(VariableFlow::writeKey).collect(Collectors.toSet());
         for (Map.Entry<Scripts.Script, List<String>> entry : reads.entrySet()) {
             Set<String> unset = new TreeSet<>();
             for (String variable : entry.getValue()) {
-                boolean set = written.stream().anyMatch(w -> VariableFlow.sets(w, variable));
+                boolean set = VariableFlow.readKeys(variable).stream().anyMatch(keys::contains);
                 if (!set && !VariableFlow.builtIn(variable)) unset.add(variable);
             }
             if (unset.isEmpty()) continue;

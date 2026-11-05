@@ -115,7 +115,35 @@ public final class ScriptAnalyzer {
         return scripts;
     }
 
+    /**
+     * The facts of the scripts parsed lately, by name and source: several rules read the same script, and parsing is
+     * the slow part. Keyed by the text itself, so a changed script is parsed again; bounded by the characters kept.
+     */
+    private static final int CACHED_CHARACTERS = 20_000_000;
+    private static final Map<String, Facts> CACHE = new LinkedHashMap<>(64, 0.75f, true);
+    private static long cachedCharacters;
+
     public static Facts analyze(String source, String name) {
+        String key = name + '\0' + source;
+        synchronized (CACHE) {
+            Facts cached = CACHE.get(key);
+            if (cached != null) return cached;
+        }
+        Facts facts = parsed(source, name);
+        if (key.length() <= CACHED_CHARACTERS / 4) {
+            synchronized (CACHE) {
+                if (CACHE.put(key, facts) == null) cachedCharacters += key.length();
+                var oldest = CACHE.entrySet().iterator();
+                while (cachedCharacters > CACHED_CHARACTERS && oldest.hasNext()) {
+                    cachedCharacters -= oldest.next().getKey().length();
+                    oldest.remove();
+                }
+            }
+        }
+        return facts;
+    }
+
+    private static Facts parsed(String source, String name) {
         AstRoot root;
         try {
             root = parse(source, name);

@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -105,6 +106,21 @@ public final class VariableFlow {
         public String label() {
             return type.equals("RouteRule") ? "RouteRule " + policy : policy;
         }
+
+        /** From the place only: hashing every read and write made the maps of {@link #resolve} slow. */
+        @Override
+        public int hashCode() {
+            return Objects.hash(bundle, policy, type, location, phase);
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return this == o || o instanceof Step s && Objects.equals(bundle, s.bundle)
+                    && Objects.equals(policy, s.policy) && Objects.equals(type, s.type)
+                    && Objects.equals(location, s.location) && Objects.equals(phase, s.phase)
+                    && Objects.equals(condition, s.condition) && reads.equals(s.reads) && writes.equals(s.writes)
+                    && opaque == s.opaque;
+        }
     }
 
     public enum Source {
@@ -130,6 +146,9 @@ public final class VariableFlow {
     private final BundleReport bundle;
     private final List<Step> steps;
     private final List<Read> reads;
+    /** {@link #readsOf} and {@link #consumersOf} by policy, built on first use. */
+    private Map<String, List<Read>> readsByPolicy;
+    private Map<String, List<Read>> consumersByPolicy;
 
     private VariableFlow(BundleReport bundle, List<Step> steps, List<Read> reads) {
         this.bundle = bundle;
@@ -178,15 +197,29 @@ public final class VariableFlow {
     }
 
     /** What the policy reads, and which steps set it. */
-    public List<Read> readsOf(String policy) {
-        return reads.stream().filter(r -> isPolicy(r.step(), policy)).toList();
+    public synchronized List<Read> readsOf(String policy) {
+        if (readsByPolicy == null) {
+            readsByPolicy = new HashMap<>();
+            for (Read read : reads) {
+                if (!read.step().type().equals("RouteRule")) {
+                    readsByPolicy.computeIfAbsent(read.step().policy(), k -> new ArrayList<>()).add(read);
+                }
+            }
+        }
+        return List.copyOf(readsByPolicy.getOrDefault(policy, List.of()));
     }
 
     /** The reads of other steps that the policy sets. */
-    public List<Read> consumersOf(String policy) {
-        return reads.stream()
-                .filter(r -> r.source() == Source.SET && r.producers().stream().anyMatch(p -> isPolicy(p, policy)))
-                .toList();
+    public synchronized List<Read> consumersOf(String policy) {
+        if (consumersByPolicy == null) {
+            consumersByPolicy = new HashMap<>();
+            for (Read read : reads) {
+                if (read.source() != Source.SET) continue;
+                read.producers().stream().filter(p -> !p.type().equals("RouteRule")).map(Step::policy).distinct()
+                        .forEach(p -> consumersByPolicy.computeIfAbsent(p, k -> new ArrayList<>()).add(read));
+            }
+        }
+        return List.copyOf(consumersByPolicy.getOrDefault(policy, List.of()));
     }
 
     public List<Read> reads(Source source) {
@@ -279,8 +312,44 @@ public final class VariableFlow {
         return header.matches() ? header.group(1) + header.group(2).toLowerCase(Locale.ROOT) : name;
     }
 
-    private static boolean isPolicy(Step step, String policy) {
-        return !step.type().equals("RouteRule") && step.policy().equals(policy);
+    /** What a write sets ({@link #sets}): its normalized name without the {@code .*} of a family. */
+    public static String writeKey(String write) {
+        String w = normalize(write);
+        return w.endsWith(".*") ? w.substring(0, w.length() - 2) : w;
+    }
+
+    /** The keys {@code read} may be set under ({@link #writeKey}): itself and each part of it, normalized. */
+    public static List<String> readKeys(String read) {
+        String r = normalize(read);
+        List<String> keys = new ArrayList<>();
+        for (int dot = r.indexOf('.'); dot >= 0; dot = r.indexOf('.', dot + 1)) keys.add(r.substring(0, dot));
+        keys.add(r);
+        return keys;
+    }
+
+    /**
+     * The steps of a pipeline by what they write, normalized and without the {@code .*} of a family: a write sets a
+     * read when its key is the read or a part of it ({@link #sets}), so a read only looks up its own parts.
+     */
+    private static Map<String, List<Integer>> writers(List<Step> pipeline) {
+        Map<String, List<Integer>> writers = new HashMap<>();
+        for (int j = 0; j < pipeline.size(); j++) {
+            for (Access write : pipeline.get(j).writes()) {
+                List<Integer> steps = writers.computeIfAbsent(writeKey(write.name()), k -> new ArrayList<>());
+                if (steps.isEmpty() || steps.get(steps.size() - 1) != j) steps.add(j);
+            }
+        }
+        return writers;
+    }
+
+    /** The positions of the steps that write {@code read}, in run order: the same as testing {@link #sets} on each. */
+    private static Iterable<Integer> writersOf(Map<String, List<Integer>> writers, String read) {
+        Set<Integer> found = new TreeSet<>();
+        for (String key : readKeys(read)) {
+            List<Integer> steps = writers.get(key);
+            if (steps != null) found.addAll(steps);
+        }
+        return found;
     }
 
     /** What the bundle, as a shared flow, reads from its caller and writes for it. */
@@ -312,19 +381,25 @@ public final class VariableFlow {
         Set<String> policies = pipelines.stream().flatMap(List::stream).filter(s -> !s.type().equals("RouteRule"))
                 .map(Step::policy).collect(Collectors.toSet());
         for (List<Step> pipeline : pipelines) {
+            Map<String, List<Integer>> writers = writers(pipeline);
             for (int i = 0; i < pipeline.size(); i++) {
                 Step step = pipeline.get(i);
+                if (step.reads().isEmpty()) continue;
+                boolean opaqueBefore = false;
+                for (int j = 0; j < pipeline.size() && !opaqueBefore; j++) {
+                    Step other = pipeline.get(j);
+                    opaqueBefore = other != step && !(other.fault() && !step.fault()) && (j < i || step.fault())
+                            && other.opaque();
+                }
                 for (Access read : step.reads()) {
                     Key key = new Key(step, read);
                     Set<Step> earlier = before.computeIfAbsent(key, k -> new LinkedHashSet<>());
                     Set<Step> later = after.computeIfAbsent(key, k -> new LinkedHashSet<>());
-                    for (int j = 0; j < pipeline.size(); j++) {
+                    if (opaqueBefore) opaque.put(key, true);
+                    for (int j : writersOf(writers, read.name())) {
                         Step other = pipeline.get(j);
                         if (other == step || (other.fault() && !step.fault())) continue;
-                        boolean runsBefore = j < i || step.fault();
-                        if (runsBefore && other.opaque()) opaque.put(key, true);
-                        if (other.writes().stream().noneMatch(w -> sets(w.name(), read.name()))) continue;
-                        (runsBefore ? earlier : later).add(other);
+                        (j < i || step.fault() ? earlier : later).add(other);
                     }
                 }
             }
