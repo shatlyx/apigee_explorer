@@ -113,6 +113,155 @@ function toast(message, bad) {
   toastTimer = setTimeout(() => { el.hidden = true; }, bad ? 7000 : 3500);
 }
 
+/**
+ * Renders Markdown as elements, built with h(), so nothing in the text is ever parsed as HTML. Covers what answers use:
+ * headings, paragraphs, nested lists, fenced code, quotes, tables, rules, and inline code, bold, italic and links.
+ */
+function markdown(source) {
+  const lines = String(source || '').replace(/\r\n?/g, '\n').split('\n');
+  const root = h('div', {class: 'markdown'});
+  let i = 0;
+  const isBlank = line => !line.trim();
+  const fence = line => line.match(/^\s*(```|~~~)\s*([\w+-]*)\s*$/);
+  const heading = line => line.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/);
+  const rule = line => /^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line);
+  const item = line => line.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
+  const tableRow = line => /^\s*\|.*\|\s*$/.test(line);
+  const tableSeparator = line => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(line);
+  const cells = line => line.trim().replace(/^\||\|$/g, '').split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, '|'));
+  const startsBlock = line => fence(line) || heading(line) || rule(line) || item(line) || /^\s*>/.test(line)
+    || (tableRow(line));
+
+  while (i < lines.length) {
+    const line = lines[i];
+    if (isBlank(line)) { i++; continue; }
+    let match;
+    if ((match = fence(line))) {
+      const code = [];
+      i++;
+      while (i < lines.length && !lines[i].trim().startsWith(match[1])) code.push(lines[i++]);
+      i++;
+      root.append(h('pre', {}, h('code', match[2] ? {'data-lang': match[2]} : {}, code.join('\n'))));
+    } else if ((match = heading(line))) {
+      root.append(h('h' + Math.min(match[1].length + 2, 6), {}, inlineMarkdown(match[2])));
+      i++;
+    } else if (rule(line)) {
+      root.append(h('hr', {}));
+      i++;
+    } else if (/^\s*>/.test(line)) {
+      const quoted = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) quoted.push(lines[i++].replace(/^\s*>\s?/, ''));
+      root.append(h('blockquote', {}, [...markdown(quoted.join('\n')).childNodes]));
+    } else if (tableRow(line) && i + 1 < lines.length && tableSeparator(lines[i + 1])) {
+      const head = cells(line);
+      const aligns = cells(lines[i + 1]).map(c => c.endsWith(':') ? (c.startsWith(':') ? 'center' : 'right') : null);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && tableRow(lines[i])) rows.push(cells(lines[i++]));
+      const cell = (tag, text, index) => h(tag, aligns[index] ? {style: 'text-align:' + aligns[index]} : {}, inlineMarkdown(text));
+      root.append(h('div', {class: 'table-wrap'}, h('table', {},
+        h('thead', {}, h('tr', {}, head.map((c, n) => cell('th', c, n)))),
+        h('tbody', {}, rows.map(row => h('tr', {}, head.map((_, n) => cell('td', row[n] || '', n))))))));
+    } else if (item(line)) {
+      const block = [];
+      while (i < lines.length && (item(lines[i]) || (!isBlank(lines[i]) && /^\s+\S/.test(lines[i]) && block.length)
+          || (isBlank(lines[i]) && i + 1 < lines.length && (item(lines[i + 1]) || /^\s{2,}\S/.test(lines[i + 1]))))) {
+        block.push(lines[i++]);
+      }
+      root.append(markdownList(block));
+    } else {
+      const text = [];
+      while (i < lines.length && !isBlank(lines[i]) && !(text.length && startsBlock(lines[i]))) text.push(lines[i++].trim());
+      const children = [];
+      text.forEach((t, n) => {
+        const hardBreak = /( {2,}|\\)$/.test(lines[i - text.length + n]);
+        children.push(inlineMarkdown(t.replace(/\\$/, '')));
+        if (n < text.length - 1) children.push(hardBreak ? h('br', {}) : ' ');
+      });
+      root.append(h('p', {}, children));
+    }
+  }
+  return root;
+}
+
+/** A list and the lists nested in it, from lines that start with a marker or are indented under one. */
+function markdownList(lines) {
+  const first = lines[0].match(/^(\s*)([-*+]|\d+[.)])\s+/);
+  const indent = first[1].length;
+  const ordered = /\d/.test(first[2]);
+  const list = h(ordered ? 'ol' : 'ul', ordered && parseInt(first[2], 10) !== 1 ? {start: parseInt(first[2], 10)} : {});
+  let current = null;
+  for (const line of lines) {
+    const match = line.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
+    if (match && match[1].length <= indent) {
+      current = {text: [match[3]], nested: []};
+      list.append(current.li = h('li', {}));
+      current.li.data = current;
+    } else if (current) {
+      (match || current.nested.length ? current.nested : current.text).push(match || current.nested.length ? line : line.trim());
+    }
+  }
+  for (const li of list.children) {
+    const {text, nested} = li.data;
+    const task = text[0].match(/^\[([ xX])\]\s+(.*)$/);
+    if (task) {
+      text[0] = task[2];
+      li.className = 'task';
+      li.append(h('input', {type: 'checkbox', disabled: true, checked: task[1] !== ' '}), ' ');
+    }
+    li.append(...inlineMarkdown(text.filter(t => t).join(' ')));
+    const sub = nested.filter(l => l.trim());
+    if (sub.length) li.append(...markdown(sub.map(l => l.replace(new RegExp('^\\s{0,' + (indent + 4) + '}'), '')).join('\n')).childNodes);
+    delete li.data;
+  }
+  return list;
+}
+
+/** Inline Markdown as nodes: code spans, links, bold, italic, strikethrough. */
+function inlineMarkdown(text) {
+  const out = [];
+  const pattern = /(`+)([\s\S]*?[^`])\1(?!`)|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|<(https?:\/\/[^\s>]+)>|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|~~([\s\S]+?)~~|\*([^\s*][\s\S]*?)\*|(?<![\w])_([^\s_][\s\S]*?)_(?![\w])/g;
+  let last = 0;
+  let match;
+  while ((match = pattern.exec(text))) {
+    if (match.index > last) out.push(text.slice(last, match.index).replace(/\\([\\`*_{}\[\]()#+\-.!|~>])/g, '$1'));
+    const [, , code, label, href, bare, bold1, bold2, strike, em1, em2] = match;
+    if (code !== undefined) out.push(h('code', {}, code.trim()));
+    else if (label !== undefined) out.push(h('a', {href, target: '_blank', rel: 'noopener noreferrer'}, inlineMarkdown(label)));
+    else if (bare !== undefined) out.push(h('a', {href: bare, target: '_blank', rel: 'noopener noreferrer'}, bare));
+    else if (bold1 !== undefined || bold2 !== undefined) out.push(h('strong', {}, inlineMarkdown(bold1 ?? bold2)));
+    else if (strike !== undefined) out.push(h('del', {}, inlineMarkdown(strike)));
+    else out.push(h('em', {}, inlineMarkdown(em1 ?? em2)));
+    last = pattern.lastIndex;
+  }
+  if (last < text.length) out.push(text.slice(last).replace(/\\([\\`*_{}\[\]()#+\-.!|~>])/g, '$1'));
+  return out;
+}
+
+/** Copies rendered Markdown with its formatting (HTML, for Word, Teams, Confluence…), and the Markdown as plain text. */
+async function copyFormatted(element, source) {
+  const html = '<meta charset="utf-8"><div>' + element.innerHTML + '</div>';
+  try {
+    if (!window.ClipboardItem || !navigator.clipboard?.write) throw new Error('no clipboard');
+    await navigator.clipboard.write([new ClipboardItem({
+      'text/html': new Blob([html], {type: 'text/html'}),
+      'text/plain': new Blob([source], {type: 'text/plain'})})]);
+    toast('Copied');
+    return;
+  } catch (ignored) {
+    // Refused or missing (permissions, older browser): the copy event below needs neither.
+  }
+  const onCopy = event => {
+    event.clipboardData.setData('text/html', html);
+    event.clipboardData.setData('text/plain', source);
+    event.preventDefault();
+  };
+  document.addEventListener('copy', onCopy);
+  const copied = document.execCommand('copy');
+  document.removeEventListener('copy', onCopy);
+  toast(copied ? 'Copied' : 'Could not copy: select the text and copy it', !copied);
+}
+
 function confirmDialog(title, message, confirmLabel) {
   return new Promise(resolve => {
     const dialog = h('dialog', {},
@@ -2718,8 +2867,12 @@ async function editorView(id, isCurrent) {
       const own = result.edits.filter(e => e.bundle === root);
       const others = result.edits.filter(e => e.bundle !== root);
       const review = result.review;
+      const answer = markdown(result.summary);
+      answer.classList.add('editor-answer');
+      const copy = h('button', {type: 'button', class: 'editor-answer-copy', title: 'Copy the answer with its formatting',
+        onclick: () => copyFormatted(answer, result.summary || '')}, 'Copy');
       body.replaceChildren(h('div', {},
-        h('p', {class: 'editor-answer'}, result.summary),
+        h('div', {class: 'editor-answer-box'}, copy, answer),
         result.warnings.length ? h('ul', {}, result.warnings.map(w => h('li', {}, w))) : null,
         notAppliedView(result.notApplied),
         unsentView(result, title, request, dialog),
