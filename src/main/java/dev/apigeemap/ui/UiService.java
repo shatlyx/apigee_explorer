@@ -1385,6 +1385,27 @@ final class UiService {
         return analyze(settings(), id);
     }
 
+    /** The shared flows of the folders of the settings. */
+    SharedFlowRepository sharedFlows() throws IOException {
+        return repository(settings());
+    }
+
+    /**
+     * The proxies other than the one in {@code proxyDir} that call the shared flow in {@code flowDir}, as their last
+     * analysis found: {@code {proxies: [{id, name}], notAnalyzed}}, {@code notAnalyzed} counting the proxies of the
+     * folder never analyzed. Analyzes nothing.
+     */
+    Map<String, Object> callers(Path flowDir, Path proxyDir) throws IOException {
+        Settings s = settings();
+        List<Map<String, String>> proxies = new ArrayList<>();
+        stats.calling(flowDir, proxyDir).forEach((dir, entry) -> proxies.add(Map.of("id", id(s, Path.of(dir)),
+                "name", entry.summary().name())));
+        proxies.sort(Comparator.comparing((Map<String, String> p) -> p.get("name")));
+        long notAnalyzed = s.proxiesRoot().isEmpty() ? 0
+                : proxyDirs(s).stream().filter(dir -> stats.get(dir).isEmpty()).count();
+        return Map.of("proxies", proxies, "notAnalyzed", notAnalyzed);
+    }
+
     /** An analyzer that resolves shared flows from the folders of the settings. */
     BundleAnalyzer analyzer() throws IOException {
         return new BundleAnalyzer(repository(settings()));

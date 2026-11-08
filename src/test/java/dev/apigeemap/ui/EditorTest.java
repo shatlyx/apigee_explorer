@@ -61,7 +61,7 @@ class EditorTest {
     }
 
     @Test
-    void listsTheFilesOfTheProxyAndItsSharedFlowsAsReadOnly() throws Exception {
+    void listsTheFilesOfTheProxyAndItsSharedFlowsAsEditable() throws Exception {
         Map<?, ?> workspace = (Map<?, ?>) Json.parse(get("/api/editor?id=" + ID).body());
         List<?> bundles = (List<?>) workspace.get("bundles");
 
@@ -71,7 +71,104 @@ class EditorTest {
         assertTrue(((List<?>) proxy.get("files")).stream().map(f -> ((Map<?, ?>) f).get("path"))
                 .anyMatch("proxies/default.xml"::equals));
         assertTrue(bundles.size() > 1);
-        assertEquals(false, ((Map<?, ?>) bundles.get(1)).get("editable"));
+        Map<?, ?> flow = (Map<?, ?>) bundles.get(1);
+        assertEquals(true, flow.get("editable"));
+        assertEquals(Map.of("proxies", List.of(), "notAnalyzed", 1L), normalized((Map<?, ?>) flow.get("callers")));
+    }
+
+    @Test
+    void tellsWhichOtherProxiesCallASharedFlow() throws Exception {
+        copy(EXAMPLES.resolve("orders-api"), proxies.resolve("orders-v2"));
+        assertEquals(200, post("/api/proxies/analyze", "{}").statusCode());
+
+        Map<?, ?> workspace = (Map<?, ?>) Json.parse(get("/api/editor?id=" + ID).body());
+        Map<?, ?> security = ((List<?>) workspace.get("bundles")).stream().map(b -> (Map<?, ?>) b)
+                .filter(b -> b.get("name").equals("sf-security")).findFirst().orElseThrow();
+
+        Map<?, ?> callers = (Map<?, ?>) security.get("callers");
+        assertEquals(List.of("orders-v2"), ((List<?>) callers.get("proxies")).stream()
+                .map(p -> ((Map<?, ?>) p).get("id")).toList());
+        assertEquals(0, ((Number) callers.get("notAnalyzed")).intValue());
+    }
+
+    @Test
+    void checksASharedFlowAsItIsTypedWithoutWritingIt() throws Exception {
+        Path file = tmp.resolve("sharedflows/sf-logging/sharedflowbundle/sharedflows/default.xml");
+        String saved = Files.readString(file);
+        String edited = saved.replace("<Step><Name>ML-Syslog</Name></Step>",
+                "<Step><Name>ML-Syslog</Name></Step><Step><Name>Nowhere</Name></Step>");
+
+        Map<?, ?> check = check(List.of(Map.of("bundle", "sf-logging", "path", "sharedflows/default.xml",
+                "content", edited)));
+
+        assertEquals(true, check.get("analyzed"), String.valueOf(check));
+        List<Map<?, ?>> steps = new ArrayList<>();
+        for (Object lane : (List<?>) ((Map<?, ?>) check.get("outline")).get("lanes")) {
+            for (Object segment : (List<?>) ((Map<?, ?>) lane).get("segments")) {
+                ((List<?>) ((Map<?, ?>) segment).get("steps")).forEach(s -> steps.add((Map<?, ?>) s));
+            }
+        }
+        Map<?, ?> called = (Map<?, ?>) steps.stream().filter(s -> "FC-Logging".equals(s.get("policy"))).findFirst()
+                .orElseThrow().get("called");
+        assertEquals(List.of("ML-Syslog", "Nowhere"), ((List<?>) called.get("steps")).stream()
+                .map(s -> ((Map<?, ?>) s).get("policy")).toList());
+        assertEquals(saved, Files.readString(file));
+    }
+
+    @Test
+    void pointsToMalformedXmlInASharedFlow() throws Exception {
+        Map<?, ?> check = check(List.of(Map.of("bundle", "sf-logging", "path", "policies/ML-Syslog.xml",
+                "content", "<MessageLogging>\n<Syslog>\n</MessageLogging>")));
+
+        assertEquals(false, check.get("analyzed"));
+        Map<?, ?> problem = (Map<?, ?>) problems(check).get(0);
+        assertEquals("sf-logging", problem.get("bundle"));
+        assertEquals("policies/ML-Syslog.xml", problem.get("file"));
+    }
+
+    @Test
+    void savesASharedFlowWithTheProxyEachInItsOwnHistory() throws Exception {
+        Path proxyFile = proxies.resolve("orders-api/apiproxy/proxies/default.xml");
+        Path flowFile = tmp.resolve("sharedflows/sf-logging/sharedflowbundle/sharedflows/default.xml");
+        String proxyBase = Files.readString(proxyFile);
+        String flowBase = Files.readString(flowFile);
+
+        HttpResponse<String> response = post("/api/editor/save?id=" + ID, Json.write(Map.of("files", List.of(
+                Map.of("path", "proxies/default.xml", "content", proxyBase + "<!-- p -->\n", "base", proxyBase),
+                Map.of("bundle", "sf-logging", "path", "sharedflows/default.xml", "content", flowBase + "<!-- f -->\n",
+                        "base", flowBase)))));
+
+        assertEquals(200, response.statusCode(), response.body());
+        assertEquals(proxyBase + "<!-- p -->\n", Files.readString(proxyFile));
+        assertEquals(flowBase + "<!-- f -->\n", Files.readString(flowFile));
+        Map<String, Object> titles = new java.util.HashMap<>();
+        for (Object entry : (List<?>) Json.parse(get("/api/history?id=" + ID).body())) {
+            Map<?, ?> bundle = (Map<?, ?>) entry;
+            titles.put(String.valueOf(bundle.get("bundle")), ((Map<?, ?>) ((List<?>) bundle.get("steps")).get(0)).get("title"));
+        }
+        assertEquals("Edit proxies/default.xml", titles.get("orders-api"));
+        assertEquals("Edit sharedflows/default.xml", titles.get("sf-logging"));
+    }
+
+    @Test
+    void refusesToSaveASharedFlowThatChangedOrIsNotCalled() throws Exception {
+        Path flowFile = tmp.resolve("sharedflows/sf-logging/sharedflowbundle/sharedflows/default.xml");
+        String flowBase = Files.readString(flowFile);
+        Files.writeString(flowFile, flowBase + "<!-- elsewhere -->\n");
+
+        HttpResponse<String> changed = post("/api/editor/save?id=" + ID, Json.write(Map.of("files", List.of(
+                Map.of("bundle", "sf-logging", "path", "sharedflows/default.xml", "content", flowBase + "x", "base", flowBase)))));
+        HttpResponse<String> unknown = post("/api/editor/save?id=" + ID, Json.write(Map.of("files", List.of(
+                Map.of("bundle", "sf-cors", "path", "sharedflows/default.xml", "content", "x", "base", "y")))));
+
+        assertEquals(409, changed.statusCode());
+        assertTrue(changed.body().contains("sf-logging/sharedflows/default.xml"), changed.body());
+        assertEquals(404, unknown.statusCode());
+        assertTrue(Files.readString(flowFile).contains("elsewhere"));
+    }
+
+    private static Map<?, ?> normalized(Map<?, ?> callers) {
+        return Map.of("proxies", callers.get("proxies"), "notAnalyzed", ((Number) callers.get("notAnalyzed")).longValue());
     }
 
     @Test

@@ -62,6 +62,20 @@ final class ProxyStats {
         return Optional.ofNullable(entries.get(dir.toString()));
     }
 
+    /**
+     * The proxies whose last analysis found a call to the shared flow in {@code flowDir}, by proxy folder, but the one
+     * whose bundle is in {@code except}.
+     */
+    synchronized Map<String, Entry> calling(Path flowDir, Path except) {
+        Map<String, Entry> found = new LinkedHashMap<>();
+        String wanted = flowDir.toAbsolutePath().normalize().toString();
+        String other = except.toAbsolutePath().normalize().toString();
+        entries.forEach((dir, entry) -> {
+            if (entry.bundles().containsValue(wanted) && !entry.bundles().containsValue(other)) found.put(dir, entry);
+        });
+        return found;
+    }
+
     synchronized void put(Path dir, Entry entry) {
         entries.put(dir.toString(), entry);
         write(file, Json.write(entries.entrySet().stream().collect(LinkedHashMap::new,

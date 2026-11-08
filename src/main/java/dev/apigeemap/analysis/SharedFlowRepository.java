@@ -63,6 +63,16 @@ public final class SharedFlowRepository {
         return bundles;
     }
 
+    /**
+     * The same index where each folder that is a key of {@code copies} is replaced by its value: a copy of the shared
+     * flow, found under the same names.
+     */
+    public SharedFlowRepository replacing(Map<Path, Path> copies) {
+        SharedFlowRepository repository = new SharedFlowRepository();
+        byName.forEach((name, dir) -> repository.byName.put(name, copies.getOrDefault(dir, dir)));
+        return repository;
+    }
+
     public Optional<Path> find(String name) {
         return Optional.ofNullable(byName.get(name));
     }

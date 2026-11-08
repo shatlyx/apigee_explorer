@@ -27,6 +27,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -45,7 +46,8 @@ import org.xml.sax.helpers.DefaultHandler;
 /**
  * What the Editor page does: lists and reads the files of a proxy, checks what is being typed and saves it. Text that
  * is not saved yet is checked in a throwaway copy of the bundle, so the analysis and the rules run on it as they are.
- * The shared flows of the proxy are shown read-only: they are analyzed from their own folders.
+ * The shared flows the proxy calls are edited with it: a check copies those whose text changes and analyzes the proxy
+ * against the copies.
  */
 final class EditorService {
 
@@ -67,7 +69,11 @@ final class EditorService {
     record EditorFile(String path, boolean text) {
     }
 
-    record EditorBundle(String name, boolean editable, List<EditorFile> files) {
+    /**
+     * @param callers for a shared flow, {@link UiService#callers}: the other proxies a change to it reaches; null for the
+     *                proxy
+     */
+    record EditorBundle(String name, boolean editable, List<EditorFile> files, Map<String, Object> callers) {
     }
 
     /** A place in a file that needs attention, finding or not well-formed XML. */
@@ -103,8 +109,9 @@ final class EditorService {
         List<EditorBundle> bundles = new ArrayList<>();
         Path root = service.bundleDir(id);
         for (Map.Entry<String, Path> bundle : bundles(id).entrySet()) {
-            boolean editable = bundle.getValue().equals(root);
-            bundles.add(new EditorBundle(bundle.getKey(), editable, files(bundle.getValue())));
+            boolean own = bundle.getValue().equals(root);
+            bundles.add(new EditorBundle(bundle.getKey(), true, files(bundle.getValue()),
+                    own ? null : service.callers(bundle.getValue(), root)));
         }
         return Map.of("proxy", bundles.get(0).name(), "bundles", bundles, "catalog", PolicyCatalog.ENTRIES,
                 "builtIns", VariableFlow.builtIns());
@@ -169,45 +176,120 @@ final class EditorService {
      * right after. Answers with the same check whatever the state of the text.
      */
     Check check(String id, Map<?, ?> request) throws IOException {
-        String name = bundles(id).keySet().iterator().next();
-        return inShadow(id, request, copy -> check(name, copy));
+        return inShadow(id, request, this::check);
     }
 
-    private Check check(String name, Path copy) throws IOException {
-        List<Problem> syntax = syntax(name, copy);
+    private Check check(Shadow shadow) throws IOException {
+        List<Problem> syntax = new ArrayList<>();
+        for (Map.Entry<String, Path> copy : shadow.copies.entrySet()) syntax.addAll(syntax(copy.getKey(), copy.getValue()));
         if (!syntax.isEmpty()) return new Check(false, syntax, List.of(), null, null);
         try {
-            BundleReport report = service.analyzer().analyze(BundleLocator.locate(copy));
+            BundleReport report = shadow.analyze();
             return check(report, service.migrate(report));
         } catch (IOException | RuntimeException e) {
-            return new Check(false, List.of(), List.of(),
-                    String.valueOf(e.getMessage()).replace(copy.toString(), name), null);
+            return new Check(false, List.of(), List.of(), shadow.hide(String.valueOf(e.getMessage())), null);
         }
     }
 
     private interface InShadow<T> {
-        T run(Path copy) throws IOException;
+        T run(Shadow shadow) throws IOException;
     }
 
-    /** Runs {@code work} on a copy of the bundle with the {@code buffers} of the request, deleted right after. */
-    private <T> T inShadow(String id, Map<?, ?> request, InShadow<T> work) throws IOException {
-        Path bundle = service.bundleDir(id);
-        Path shadow = Files.createTempDirectory("apigee-map-editor-");
-        try {
-            Path copy = shadow.resolve(bundle.getFileName().toString());
-            copyTree(bundle, copy);
-            for (Buffer buffer : buffers(request)) {
-                Path file = inside(copy, buffer.path());
-                if (buffer.deleted()) {
-                    Files.deleteIfExists(file);
-                } else {
-                    Files.createDirectories(file.getParent());
-                    Files.writeString(file, buffer.content());
-                }
+    /**
+     * A throwaway copy of the proxy, and of each shared flow it calls once its text is to change, analyzed against
+     * these copies.
+     */
+    private final class Shadow {
+
+        private final Path dir;
+        /** The name of the proxy bundle. */
+        final String name;
+        /** Where each bundle of the proxy is, by name, the proxy first. */
+        final Map<String, Path> sources;
+        /** The copies made so far, by bundle name, the proxy first. */
+        final Map<String, Path> copies = new LinkedHashMap<>();
+
+        Shadow(Path dir, Map<String, Path> sources) throws IOException {
+            this.dir = dir;
+            this.sources = sources;
+            this.name = sources.keySet().iterator().next();
+            Path source = sources.get(name);
+            Path copy = dir.resolve(source.getFileName().toString());
+            copyTree(source, copy);
+            copies.put(name, copy);
+        }
+
+        /** The copy of the proxy. */
+        Path copy() {
+            return copies.get(name);
+        }
+
+        boolean has(String bundle) {
+            return sources.containsKey(bundle);
+        }
+
+        /** The copy of a bundle of the proxy, made now if it was not. */
+        Path dir(String bundle) throws IOException {
+            Path made = copies.get(bundle);
+            if (made != null) return made;
+            Path source = sources.get(bundle);
+            if (source == null) throw new UiService.UiException(404, "Unknown bundle " + bundle);
+            String folder = source.getParent() == null ? "flow" : source.getParent().getFileName().toString();
+            Path copy = dir.resolve("flows").resolve(String.valueOf(copies.size())).resolve(folder)
+                    .resolve(source.getFileName().toString());
+            copyTree(source, copy);
+            copies.put(bundle, copy);
+            return copy;
+        }
+
+        /** The proxy as the copies are now, its shared flows read from their copies where there are. */
+        BundleReport analyze() throws IOException {
+            Map<Path, Path> replaced = new HashMap<>();
+            copies.forEach((bundle, copy) -> {
+                if (!bundle.equals(name)) replaced.put(sources.get(bundle), copy);
+            });
+            BundleAnalyzer analyzer = replaced.isEmpty() ? service.analyzer()
+                    : new BundleAnalyzer(service.sharedFlows().replacing(replaced));
+            return analyzer.analyze(BundleLocator.locate(copy()));
+        }
+
+        /** A message with the folders of the copies replaced by the names of their bundles. */
+        String hide(String message) {
+            String shown = message;
+            for (Map.Entry<String, Path> copy : copies.entrySet()) {
+                shown = shown.replace(copy.getValue().toString(), copy.getKey());
             }
-            return work.run(copy);
+            return shown;
+        }
+
+        /** Writes a file of a bundle in its copy, or deletes it when {@code content} is null. */
+        void write(String bundle, String path, String content) throws IOException {
+            Path file = inside(dir(bundle), path);
+            if (content == null) {
+                Files.deleteIfExists(file);
+            } else {
+                Files.createDirectories(file.getParent());
+                Files.writeString(file, content);
+            }
+        }
+    }
+
+    /**
+     * Runs {@code work} on a copy of the proxy with the {@code buffers} of the request, those of shared flows written
+     * to copies of them; all deleted right after.
+     */
+    private <T> T inShadow(String id, Map<?, ?> request, InShadow<T> work) throws IOException {
+        Map<String, Path> sources = bundles(id);
+        Path temp = Files.createTempDirectory("apigee-map-editor-");
+        try {
+            Shadow shadow = new Shadow(temp, sources);
+            for (Buffer buffer : buffers(request)) {
+                shadow.write(buffer.bundle() == null ? shadow.name : buffer.bundle(), buffer.path(),
+                        buffer.deleted() ? null : buffer.content());
+            }
+            return work.run(shadow);
         } finally {
-            deleteTree(shadow);
+            deleteTree(temp);
         }
     }
 
@@ -219,37 +301,32 @@ final class EditorService {
      * {@code notApplied}.
      */
     Map<String, Object> assist(String id, Map<?, ?> request) throws IOException {
-        String name = bundles(id).keySet().iterator().next();
-        return inShadow(id, request, copy -> {
-            Check before = check(name, copy);
+        return inShadow(id, request, shadow -> {
+            Check before = check(shadow);
             if (!before.analyzed()) {
                 throw new UiService.UiException(409, "Fix the XML of the proxy first: it cannot be analyzed");
             }
-            BundleReport report = service.analyzer().analyze(BundleLocator.locate(copy));
+            BundleReport report = shadow.analyze();
             Map<String, Object> answer = request.get("finding") instanceof Map<?, ?> finding
-                    ? fix(report, finding) : compose(id, report, before.outline(), copy, request);
+                    ? fix(report, finding) : compose(id, report, before.outline(), shadow.copy(), request);
             if (answer.containsKey("error")) return answer;
             @SuppressWarnings("unchecked")
             List<UiService.ProposedEdit> edits = (List<UiService.ProposedEdit>) answer.get("edits");
-            answer.put("review", reviewEdits(name, report.name(), copy, before, edits));
+            answer.put("review", reviewEdits(shadow, before, edits));
             return answer;
         });
     }
 
-    /** Writes the edits of the proxy to the copy, and answers what the checks say of it then. */
-    private Map<String, Object> reviewEdits(String name, String bundle, Path copy, Check before,
-                                            List<UiService.ProposedEdit> edits) throws IOException {
+    /**
+     * Writes the edits to the copies, those of the proxy and of the shared flows it calls, and answers what the checks
+     * say of it then. An edit of a bundle the proxy does not call is left out.
+     */
+    private Map<String, Object> reviewEdits(Shadow shadow, Check before, List<UiService.ProposedEdit> edits)
+            throws IOException {
         for (UiService.ProposedEdit edit : edits) {
-            if (!edit.bundle().equals(bundle)) continue;
-            Path file = inside(copy, edit.path());
-            if (edit.after() == null) {
-                Files.deleteIfExists(file);
-            } else {
-                Files.createDirectories(file.getParent());
-                Files.writeString(file, edit.after());
-            }
+            if (shadow.has(edit.bundle())) shadow.write(edit.bundle(), edit.path(), edit.after());
         }
-        return review(before, check(name, copy));
+        return review(before, check(shadow));
     }
 
     /**
@@ -259,24 +336,22 @@ final class EditorService {
      * file that changed since go to {@code notApplied}.
      */
     Map<String, Object> replay(String id, Map<?, ?> request) throws IOException {
-        String name = bundles(id).keySet().iterator().next();
         Map<String, Object> thread = service.threads().get(id, String.valueOf(request.get("thread")))
                 .orElseThrow(() -> new UiService.UiException(404, "This conversation is gone"));
         List<Map<String, Object>> turns = ComposeThreads.turns(thread);
         int index = request.get("turn") instanceof Number n ? n.intValue() : -1;
         if (index < 0 || index >= turns.size()) throw new UiService.UiException(404, "This answer is gone");
         Map<String, Object> turn = turns.get(index);
-        return inShadow(id, request, copy -> {
-            Check before = check(name, copy);
+        return inShadow(id, request, shadow -> {
+            Check before = check(shadow);
             if (!before.analyzed()) {
                 throw new UiService.UiException(409, "Fix the XML of the proxy first: it cannot be analyzed");
             }
-            String bundle = name;
             List<UiService.ProposedEdit> edits = new ArrayList<>();
             List<Map<String, Object>> notApplied = new ArrayList<>();
             if (turn.get("edits") instanceof List<?> stored) {
                 for (Object item : stored) {
-                    if (item instanceof Map<?, ?> edit) replayed(bundle, copy, edit, edits, notApplied);
+                    if (item instanceof Map<?, ?> edit) replayed(shadow, edit, edits, notApplied);
                 }
             }
             Map<String, Object> answer = new LinkedHashMap<>();
@@ -284,7 +359,7 @@ final class EditorService {
             answer.put("warnings", turn.get("warnings") instanceof List<?> w ? w : List.of());
             answer.put("edits", edits);
             answer.put("notApplied", notApplied);
-            answer.put("review", reviewEdits(name, bundle, copy, before, edits));
+            answer.put("review", reviewEdits(shadow, before, edits));
             answer.put("thread", thread.get("id"));
             answer.put("turn", index);
             return answer;
@@ -306,23 +381,19 @@ final class EditorService {
         return true;
     }
 
-    private void replayed(String bundle, Path copy, Map<?, ?> edit, List<UiService.ProposedEdit> edits,
+    private void replayed(Shadow shadow, Map<?, ?> edit, List<UiService.ProposedEdit> edits,
                           List<Map<String, Object>> notApplied) throws IOException {
         String editBundle = String.valueOf(edit.get("bundle"));
         String path = String.valueOf(edit.get("path"));
         String action = String.valueOf(edit.get("action"));
         String reason = String.valueOf(edit.get("reason"));
-        if (!editBundle.equals(bundle)) {
-            // shared flows are read-only here; the page lists them as left out
-            edits.add(new UiService.ProposedEdit(editBundle, path, action, reason, null, null, null));
-            return;
-        }
-        Path file = inside(copy, path);
-        String current = Files.isRegularFile(file) ? text(file) : null;
+        Path file = shadow.has(editBundle) ? inside(shadow.dir(editBundle), path) : null;
+        String current = file != null && Files.isRegularFile(file) ? text(file) : null;
         String problem = null;
         String after = null;
         List<?> changes = edit.get("changes") instanceof List<?> list && !list.isEmpty() ? list : null;
-        switch (action) {
+        switch (file == null ? "unknown" : action) {
+            case "unknown" -> problem = "the proxy no longer calls " + editBundle;
             case "delete" -> {
                 if (current == null) problem = "the file is already gone";
             }
@@ -359,13 +430,12 @@ final class EditorService {
 
     /** Plays one call through the proxy as it would be with {@code buffers} saved; see {@link Simulator}. */
     Simulation.Result simulate(String id, Map<?, ?> request) throws IOException {
-        String name = bundles(id).keySet().iterator().next();
-        return inShadow(id, request, copy -> {
-            Check check = check(name, copy);
+        return inShadow(id, request, shadow -> {
+            Check check = check(shadow);
             if (!check.analyzed()) {
                 throw new UiService.UiException(409, "Fix the XML of the proxy first: it cannot be analyzed");
             }
-            return Simulator.run(service.analyzer().analyze(BundleLocator.locate(copy)), input(request));
+            return Simulator.run(shadow.analyze(), input(request));
         });
     }
 
@@ -377,17 +447,19 @@ final class EditorService {
         if (!(request.get("text") instanceof String wanted) || wanted.isEmpty()) {
             throw new UiService.UiException(400, "Say what to find");
         }
-        Map<String, Buffer> unsaved = new LinkedHashMap<>();
-        buffers(request).forEach(buffer -> unsaved.put(buffer.path(), buffer));
+        Map<String, Path> bundles = bundles(id);
+        String root = bundles.keySet().iterator().next();
+        Map<String, Map<String, Buffer>> unsaved = new HashMap<>();
+        buffers(request).forEach(buffer -> unsaved.computeIfAbsent(buffer.bundle() == null ? root : buffer.bundle(),
+                b -> new LinkedHashMap<>()).put(buffer.path(), buffer));
         List<SearchMatch> matches = new ArrayList<>();
-        Path root = service.bundleDir(id);
-        for (Map.Entry<String, Path> bundle : bundles(id).entrySet()) {
-            boolean own = bundle.getValue().equals(root);
+        for (Map.Entry<String, Path> bundle : bundles.entrySet()) {
+            Map<String, Buffer> buffers = unsaved.getOrDefault(bundle.getKey(), Map.of());
             Set<String> paths = new TreeSet<>();
             files(bundle.getValue()).stream().filter(EditorFile::text).forEach(file -> paths.add(file.path()));
-            if (own) paths.addAll(unsaved.keySet());
+            paths.addAll(buffers.keySet());
             for (String path : paths) {
-                Buffer buffer = own ? unsaved.get(path) : null;
+                Buffer buffer = buffers.get(path);
                 if (buffer != null && buffer.deleted()) continue;
                 String text = buffer != null ? buffer.content() : text(bundle.getValue().resolve(path));
                 if (text != null) find(bundle.getKey(), path, text, wanted, matches);
@@ -601,42 +673,57 @@ final class EditorService {
     }
 
     /**
-     * Writes {@code {files: [{path, content, base}]}} to the proxy and records them as one step of its history, after
-     * the changes made by hand before. Nothing is written when a file is no longer {@code base}, the text it was
-     * opened with. A file without {@code base} is new, and must not exist yet.
+     * Writes {@code {files: [{bundle?, path, content, base}]}} to the proxy and to the shared flows it calls, and records
+     * them as one step of history of each bundle, after the changes made by hand before. Nothing is written when a
+     * file is no longer {@code base}, the text it was opened with. A file without {@code base} is new, and must not
+     * exist yet. Answers the step of the proxy, or of a shared flow when only shared flows changed.
      */
     synchronized SourceHistory.Step save(String id, Map<?, ?> request) throws IOException {
-        Path bundle = service.bundleDir(id);
+        Map<String, Path> bundles = bundles(id);
+        String root = bundles.keySet().iterator().next();
         List<Buffer> files = buffers(request);
         if (files.isEmpty()) throw new UiService.UiException(400, "Nothing to save");
-        Map<Path, String> writes = new LinkedHashMap<>();
+        Map<Path, Map<Path, String>> writes = new LinkedHashMap<>();
+        Map<Path, List<String>> names = new LinkedHashMap<>();
         for (Buffer file : files) {
+            String bundleName = file.bundle() == null ? root : file.bundle();
+            Path bundle = bundles.get(bundleName);
+            if (bundle == null) throw new UiService.UiException(404, "The proxy no longer calls " + bundleName);
+            String shown = bundleName.equals(root) ? file.path() : bundleName + "/" + file.path();
             Path path = inside(bundle, file.path());
             if (file.deleted()) {
                 if (!Objects.equals(text(path), file.base())) {
-                    throw new UiService.UiException(409, file.path() + " changed since it was opened: reload the page");
+                    throw new UiService.UiException(409, shown + " changed since it was opened: reload the page");
                 }
             } else if (file.base() == null) {
-                if (Files.exists(path)) throw new UiService.UiException(409, file.path() + " already exists");
+                if (Files.exists(path)) throw new UiService.UiException(409, shown + " already exists");
             } else if (!Files.isRegularFile(path)) {
-                throw new UiService.UiException(404, "Unknown file " + file.path());
+                throw new UiService.UiException(404, "Unknown file " + shown);
             } else if (!Objects.equals(text(path), file.base())) {
-                throw new UiService.UiException(409, file.path() + " changed since it was opened: reload the page");
+                throw new UiService.UiException(409, shown + " changed since it was opened: reload the page");
             }
-            writes.put(path, file.deleted() ? null : file.content());
+            writes.computeIfAbsent(bundle, b -> new LinkedHashMap<>()).put(path, file.deleted() ? null : file.content());
+            names.computeIfAbsent(bundle, b -> new ArrayList<>()).add(file.path());
         }
-        try (SourceHistory history = SourceHistory.open(bundle, historyRoot)) {
-            history.record("Manual changes");
-            for (Map.Entry<Path, String> write : writes.entrySet()) {
-                if (write.getValue() == null) {
-                    Files.delete(write.getKey());
-                } else {
-                    Files.createDirectories(write.getKey().getParent());
-                    Files.writeString(write.getKey(), write.getValue());
+        SourceHistory.Step step = null;
+        for (Map.Entry<Path, Map<Path, String>> bundle : writes.entrySet()) {
+            try (SourceHistory history = SourceHistory.open(bundle.getKey(), historyRoot)) {
+                history.record("Manual changes");
+                for (Map.Entry<Path, String> write : bundle.getValue().entrySet()) {
+                    if (write.getValue() == null) {
+                        Files.delete(write.getKey());
+                    } else {
+                        Files.createDirectories(write.getKey().getParent());
+                        Files.writeString(write.getKey(), write.getValue());
+                    }
                 }
+                List<String> saved = names.get(bundle.getKey());
+                SourceHistory.Step recorded = history.record(saved.size() == 1 ? "Edit " + saved.get(0)
+                        : "Edit " + saved.size() + " files");
+                if (step == null || bundle.getKey().equals(bundles.get(root))) step = recorded;
             }
-            return history.record(files.size() == 1 ? "Edit " + files.get(0).path() : "Edit " + files.size() + " files");
         }
+        return step;
     }
 
     /**
@@ -670,8 +757,11 @@ final class EditorService {
         return plan;
     }
 
-    /** @param deleted true when the file goes away; it then has no content */
-    private record Buffer(String path, String content, String base, boolean deleted) {
+    /**
+     * @param bundle  the bundle the file belongs to, a shared flow the proxy calls; null for the proxy
+     * @param deleted true when the file goes away; it then has no content
+     */
+    private record Buffer(String bundle, String path, String content, String base, boolean deleted) {
     }
 
     private static List<Buffer> buffers(Map<?, ?> request) {
@@ -682,7 +772,8 @@ final class EditorService {
             if (item instanceof Map<?, ?> map && map.get("path") instanceof String path) {
                 boolean deleted = Boolean.TRUE.equals(map.get("deleted"));
                 if (!deleted && !(map.get("content") instanceof String)) continue;
-                buffers.add(new Buffer(path, map.get("content") instanceof String content ? content : null,
+                buffers.add(new Buffer(map.get("bundle") instanceof String bundle && !bundle.isBlank() ? bundle : null,
+                        path, map.get("content") instanceof String content ? content : null,
                         map.get("base") instanceof String base ? base : null, deleted));
             }
         }
