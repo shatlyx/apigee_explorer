@@ -94,6 +94,14 @@ const api = {
   editorCheck: (id, buffers) => request('POST', '/api/editor/check?id=' + encodeURIComponent(id), {buffers}),
   editorSave: (id, files) => request('POST', '/api/editor/save?id=' + encodeURIComponent(id), {files}),
   editorAssist: (id, asked) => request('POST', '/api/editor/assist?id=' + encodeURIComponent(id), asked),
+  composeThreads: id => request('GET', '/api/compose/threads?id=' + encodeURIComponent(id)),
+  composeThread: (id, thread) => request('GET', '/api/compose/thread?id=' + encodeURIComponent(id)
+    + '&thread=' + encodeURIComponent(thread)),
+  composeReplay: (id, replay) => request('POST', '/api/compose/replay?id=' + encodeURIComponent(id), replay),
+  composeApplied: (id, thread, turn) => request('POST', '/api/compose/applied?id=' + encodeURIComponent(id)
+    + '&thread=' + encodeURIComponent(thread) + '&turn=' + turn),
+  composeDelete: (id, thread) => request('POST', '/api/compose/delete?id=' + encodeURIComponent(id)
+    + '&thread=' + encodeURIComponent(thread)),
   editorSimulate: (id, call) => request('POST', '/api/editor/simulate?id=' + encodeURIComponent(id), call),
   editorSearch: (id, search) => request('POST', '/api/editor/search?id=' + encodeURIComponent(id), search),
   editorRename: (id, change) => request('POST', '/api/editor/rename?id=' + encodeURIComponent(id), change),
@@ -2934,10 +2942,287 @@ async function editorView(id, isCurrent) {
     return {path: file.path, text: file.model.getValueInRange(range)};
   }
 
-  async function composeDialog() {
-    const asked = await textDialog('Compose', 'Say what the proxy should do, or ask about it. Your unsaved text is taken into account, and nothing changes until you apply and save.',
-      'What do you need?', 'Send');
-    if (asked) assistDialog('Compose', {request: asked, selection: selection(), open: openPath()});
+  /** The conversation Compose reopens: the last one asked or opened while this page is shown. */
+  let lastThread = null;
+
+  function composeDialog() {
+    composeThreadDialog({thread: lastThread});
+  }
+
+  /**
+   * Compose as a conversation: each request goes with the earlier turns, every answer is kept (compose/ next to the
+   * settings), and the changes of any answer can be applied later, made again on the text as it is then.
+   * {@code start.thread} opens a kept conversation; {@code start.ask} sends a first request at once.
+   */
+  function composeThreadDialog(start) {
+    let threadId = start.thread || null;
+    let turns = [];
+    const fresh = new Map(); // turn index -> answer of this page, its edits made on the buffers as they were
+    let busy = false;
+    let diff = null;
+
+    const title = h('span', {class: 'compose-title'});
+    const listButton = h('button', {type: 'button', onclick: () => showList()}, 'Conversations');
+    const newButton = h('button', {type: 'button', onclick: () => openThread(null)}, 'New');
+    const list = h('div', {class: 'compose-list', hidden: true});
+    const thread = h('div', {class: 'compose-turns'});
+    const input = h('textarea', {rows: 3, 'aria-label': 'What do you need?', placeholder: 'What do you need? (Ctrl+Enter to send)',
+      oninput: () => { sendButton.disabled = busy || !input.value.trim(); },
+      onkeydown: event => {
+        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !sendButton.disabled) {
+          event.preventDefault();
+          sendInput();
+        }
+      }});
+    const sendButton = h('button', {type: 'button', class: 'primary', disabled: true, onclick: () => sendInput()}, 'Send');
+    const dialog = h('dialog', {class: 'wide compose-dialog'},
+      h('div', {class: 'compose-head'}, h('h2', {}, 'Compose'), title, h('span', {class: 'grow'}), listButton, newButton),
+      list, thread,
+      h('div', {class: 'compose-input'}, input, sendButton),
+      h('p', {class: 'sub'}, 'Your unsaved text is taken into account, and nothing changes until you apply and save.'),
+      h('div', {class: 'actions'}, h('button', {type: 'button', onclick: () => dialog.close()}, 'Close')));
+    dialog.addEventListener('close', () => {
+      closeChanges();
+      dialog.remove();
+    });
+    document.body.append(dialog);
+    dialog.showModal();
+
+    if (start.ask) {
+      openThread(null, true);
+      send(start.ask.request, {selection: start.ask.selection});
+    } else {
+      openThread(threadId);
+    }
+
+    async function openThread(tid, quiet) {
+      closeChanges();
+      threadId = tid;
+      lastThread = tid;
+      turns = [];
+      fresh.clear();
+      list.hidden = true;
+      title.textContent = '';
+      if (!tid) {
+        renderTurns();
+        if (!quiet) showList(true);
+        input.focus();
+        return;
+      }
+      thread.replaceChildren(h('p', {class: 'meta'}, h('span', {class: 'spinner'}), ' Opening the conversation'));
+      try {
+        const stored = await api.composeThread(id, tid);
+        turns = stored.turns || [];
+        title.textContent = stored.title || '';
+        renderTurns();
+      } catch (error) {
+        lastThread = null;
+        threadId = null;
+        thread.replaceChildren(errorBox(error));
+      }
+      input.focus();
+    }
+
+    async function showList(whenEmpty) {
+      list.hidden = false;
+      list.replaceChildren(h('p', {class: 'meta'}, h('span', {class: 'spinner'}), ' Loading'));
+      let threads;
+      try {
+        threads = await api.composeThreads(id);
+      } catch (error) {
+        list.replaceChildren(errorBox(error));
+        return;
+      }
+      if (!threads.length) {
+        list.hidden = !!whenEmpty;
+        list.replaceChildren(h('p', {class: 'meta'}, 'No conversation about this proxy yet.'));
+        return;
+      }
+      list.replaceChildren(h('div', {class: 'compose-list-head'}, h('b', {}, 'Earlier conversations'),
+        whenEmpty ? null : h('button', {type: 'button', class: 'link', onclick: () => { list.hidden = true; }}, 'Hide')),
+        h('ul', {}, threads.map(t => h('li', {class: t.id === threadId ? 'on' : null},
+          h('button', {type: 'button', class: 'compose-open', onclick: () => openThread(t.id)},
+            h('span', {}, t.title || 'Untitled'),
+            h('span', {class: 'sub'}, new Date(t.updated).toLocaleString() + ' · ' + t.turns + ' answer(s)'
+              + (t.applied ? ' · ' + t.applied + ' applied' : ''))),
+          h('button', {type: 'button', class: 'link', title: 'Delete this conversation', onclick: async () => {
+            if (!await confirmDialog('Delete the conversation', '"' + (t.title || 'Untitled') + '" and its answers will be deleted. Changes already applied stay.', 'Delete')) return;
+            try {
+              await api.composeDelete(id, t.id);
+              if (t.id === threadId) openThread(null, true);
+              showList(whenEmpty);
+            } catch (error) {
+              toast(error.message, true);
+            }
+          }}, 'Delete')))));
+    }
+
+    function sendInput() {
+      const asked = input.value.trim();
+      if (!asked || busy) return;
+      input.value = '';
+      sendButton.disabled = true;
+      send(asked, {});
+    }
+
+    async function send(asked, options) {
+      busy = true;
+      sendButton.disabled = true;
+      list.hidden = true;
+      closeChanges();
+      const again = !!options.again;
+      const pending = h('div', {class: 'compose-turn'}, askedView({asked, selection: (options.selection || selection())?.path}),
+        h('p', {class: 'meta'}, h('span', {class: 'spinner'}), ' Working on it. This can take a few minutes.'));
+      if (again) thread.lastElementChild?.remove();
+      thread.append(pending);
+      pending.scrollIntoView({block: 'end'});
+      let result;
+      try {
+        result = await api.editorAssist(id, {buffers: buffers(), request: asked,
+          selection: options.selection || selection(), open: openPath(), thread: threadId, again: again || null,
+          include: options.include || null});
+      } catch (error) {
+        result = {error: error.message};
+      }
+      busy = false;
+      if (!result.error) {
+        lastThread = result.thread;
+        if (!dialog.open) return;
+        threadId = result.thread;
+        const turn = {asked, selection: (options.selection || selection())?.path || null, at: new Date().toISOString(),
+          summary: result.summary, warnings: result.warnings, notApplied: result.notApplied, unsent: result.unsent,
+          needed: result.needed, applied: false,
+          edits: result.edits.map(e => ({bundle: e.bundle, path: e.path, action: e.action, reason: e.reason}))};
+        if (again && turns.length) turns[turns.length - 1] = turn; else turns.push(turn);
+        if (!title.textContent) title.textContent = asked.length > 80 ? asked.slice(0, 79) + '…' : asked;
+        fresh.set(result.turn, result);
+        renderTurns();
+        const element = thread.children[result.turn];
+        if (result.edits.some(e => e.bundle === root)) showChanges(result.turn, element);
+        element?.scrollIntoView({block: 'start'});
+      } else if (dialog.open) {
+        pending.lastElementChild.replaceWith(errorBox({message: result.error}));
+        if (!input.value) input.value = asked;
+      }
+      if (dialog.open) sendButton.disabled = !input.value.trim();
+    }
+
+    function askedView(turn) {
+      return h('div', {class: 'compose-asked'},
+        h('div', {class: 'compose-asked-text'}, turn.asked),
+        turn.selection ? h('span', {class: 'sub'}, 'about ' + turn.selection) : null);
+    }
+
+    function renderTurns() {
+      closeChanges();
+      if (!turns.length) {
+        thread.replaceChildren(h('p', {class: 'meta compose-empty'},
+          'Say what the proxy should do, or ask about it. Follow-up requests can refer to earlier answers.'));
+        return;
+      }
+      thread.replaceChildren(...turns.map((turn, index) => turnView(turn, index)));
+    }
+
+    function turnView(turn, index) {
+      const element = h('div', {class: 'compose-turn'});
+      const answer = markdown(turn.summary || '');
+      answer.classList.add('editor-answer');
+      const copy = h('button', {type: 'button', class: 'editor-answer-copy', title: 'Copy the answer with its formatting',
+        onclick: () => copyFormatted(answer, turn.summary || '')}, 'Copy');
+      const own = (turn.edits || []).filter(e => e.bundle === root);
+      const others = (turn.edits || []).filter(e => e.bundle !== root);
+      const last = index === turns.length - 1;
+      const again = last && turn.needed?.length ? h('button', {type: 'button', onclick: () =>
+        send(turn.asked, {again: true, include: turn.needed})}, 'Ask again with ' + turn.needed.join(', ')) : null;
+      element.append(askedView(turn),
+        h('div', {class: 'compose-answer'},
+          h('div', {class: 'editor-answer-box'}, copy, answer),
+          turn.warnings?.length ? h('ul', {}, turn.warnings.map(w => h('li', {}, w))) : null,
+          notAppliedView(turn.notApplied),
+          turn.unsent?.length ? h('details', {class: 'meta'},
+            h('summary', {}, turn.unsent.length + ' large file(s) not sent in full, only outlined'),
+            h('ul', {}, turn.unsent.map(path => h('li', {}, path)))) : null,
+          again,
+          others.length ? h('p', {class: 'meta'}, 'Left out, shared flows are read-only here: ' + others.map(e => e.bundle + '/' + e.path).join(', ')) : null,
+          own.length ? h('div', {class: 'compose-edits'},
+            h('span', {class: 'sub'}, own.map(e => e.action + ' ' + e.path).join(', ')),
+            turn.applied ? h('span', {class: 'badge auto'}, 'applied') : null,
+            h('button', {type: 'button', onclick: () => showChanges(index, element)}, turn.applied ? 'Show changes again' : 'Show changes')) : null));
+      return element;
+    }
+
+    function closeChanges() {
+      const model = diff?.getModel();
+      diff?.dispose();
+      model?.original.dispose();
+      model?.modified.dispose();
+      diff = null;
+      dialog.querySelector('.compose-changes')?.remove();
+    }
+
+    /** The changes of a turn against the text as it is now: those of this page's answer, or made again. */
+    async function showChanges(index, element, remade) {
+      closeChanges();
+      const panel = h('div', {class: 'compose-changes'}, h('p', {class: 'meta'}, h('span', {class: 'spinner'}), ' Preparing the changes'));
+      element.append(panel);
+      let result = remade ? null : fresh.get(index);
+      if (!result) {
+        try {
+          result = await api.composeReplay(id, {thread: threadId, turn: index, buffers: buffers()});
+        } catch (error) {
+          panel.replaceChildren(errorBox(error));
+          return;
+        }
+        if (!panel.isConnected) return;
+      }
+      const own = result.edits.filter(e => e.bundle === root);
+      const review = result.review;
+      panel.replaceChildren(...[
+        remade || !fresh.has(index) ? notAppliedView(result.notApplied) : null,
+        own.length && !review.analyzed ? errorBox({message: 'This change leaves XML to fix: ' + review.added.map(p => p.file + ': ' + p.message).join('; ')}) : null,
+        own.length && review.analyzed ? h('p', {class: 'meta'}, 'Checked: ' + review.resolved + ' problem(s) resolved, ' + review.added.length + ' new.') : null,
+        own.length && review.added.length && review.analyzed ? h('ul', {}, review.added.map(p => h('li', {}, severity(p.severity), ' ', p.rule, ' ', p.message))) : null,
+        own.length ? null : h('p', {class: 'meta'}, 'None of these changes can be made on the text as it is now.'),
+      ].filter(Boolean));
+      if (!own.length) return;
+      const bar = h('div', {class: 'editor-tabs'}, own.map(edit => h('button', {type: 'button', 'data-path': edit.path,
+        class: 'editor-assist-file', title: edit.reason, onclick: () => show(edit)}, edit.action + ' ' + edit.path)));
+      const host = h('div', {class: 'editor-diff'});
+      const apply = h('button', {type: 'button', class: 'primary', onclick: async () => {
+        const changed = own.find(e => {
+          const file = opened.get(fileKey(root, e.path));
+          return e.action !== 'create' && file && !file.deleted && file.model.getValue() !== e.before;
+        });
+        if (changed) {
+          fresh.delete(index);
+          toast(changed.path + ' changed in the meantime: the changes were made again on it', true);
+          showChanges(index, element, true);
+          return;
+        }
+        try {
+          await api.composeApplied(id, threadId, index);
+        } catch (error) {
+          toast(error.message, true);
+        }
+        dialog.close();
+        await applyEdits(own);
+        toast('Applied: check it, then save');
+      }}, 'Apply to the editor');
+      panel.append(bar, host, h('div', {class: 'actions'}, apply));
+      diff = monaco.editor.createDiffEditor(host, {automaticLayout: true, readOnly: true, minimap: {enabled: false}, fontSize: 13,
+        renderSideBySide: true, theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'vs-dark' : 'vs'});
+      show(own[0]);
+      panel.scrollIntoView({block: 'nearest'});
+
+      function show(edit) {
+        [...bar.children].forEach(b => b.classList.toggle('on', b.dataset.path === edit.path));
+        const old = diff.getModel();
+        const language = LANGUAGES[edit.path.slice(edit.path.lastIndexOf('.') + 1).toLowerCase()] || 'plaintext';
+        diff.setModel({original: monaco.editor.createModel(edit.before || '', language), modified: monaco.editor.createModel(edit.after || '', language)});
+        old?.original.dispose();
+        old?.modified.dispose();
+      }
+    }
   }
 
   const contextActions = [
@@ -2947,7 +3232,7 @@ async function editorView(id, isCurrent) {
   for (const [actionId, label, asked] of contextActions) {
     disposables.push(editor.addAction({id: actionId, label, contextMenuGroupId: 'apigee', run: () => {
       const file = active && opened.get(active);
-      if (file) assistDialog(label, {request: asked, selection: selection() || {path: file.path, text: file.model.getValue()}});
+      if (file) composeThreadDialog({ask: {request: asked, selection: selection() || {path: file.path, text: file.model.getValue()}}});
     }}));
   }
 

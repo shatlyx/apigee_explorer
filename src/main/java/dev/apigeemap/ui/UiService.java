@@ -119,8 +119,9 @@ final class UiService {
     private record ServiceFile(String path, String content) {
     }
 
+    /** @param changes the backend's edits of the file, {@code [{old, new}]}, or null when it gave a whole content */
     record ProposedEdit(String bundle, String path, String action, String reason, String before,
-                                String after) {
+                                String after, List<?> changes) {
     }
 
     /** Proposals not accepted nor rejected yet; the oldest are dropped. */
@@ -146,6 +147,7 @@ final class UiService {
     private final ProxyDocs docs;
     private final TestPlans plans;
     private final FlowSummaries summaries;
+    private final ComposeThreads threads;
     private final ProxyStats stats;
     private final Path services;
     private final TokenStore token = new TokenStore();
@@ -156,7 +158,7 @@ final class UiService {
 
     /**
      * The script reviews are kept in {@code reviews/}, the documentation in {@code docs/}, the test plans in {@code
-     * tests/}, the figures of the proxy list in {@code stats.json}, and the services ports move targets to are
+     * tests/}, the Compose conversations in {@code compose/}, the figures of the proxy list in {@code stats.json}, and the services ports move targets to are
      * written to {@code services/<proxy>/<service>}, next to {@code historyRoot}.
      */
     UiService(Path settingsFile, Path historyRoot, Path backendConfig) throws IOException {
@@ -167,9 +169,15 @@ final class UiService {
         this.docs = ProxyDocs.at(historyRoot.toAbsolutePath().resolveSibling("docs"));
         this.plans = TestPlans.at(historyRoot.toAbsolutePath().resolveSibling("tests"));
         this.summaries = FlowSummaries.at(historyRoot.toAbsolutePath().resolveSibling("summaries"));
+        this.threads = ComposeThreads.at(historyRoot.toAbsolutePath().resolveSibling("compose"));
         this.stats = ProxyStats.at(historyRoot.toAbsolutePath().resolveSibling("stats.json"));
         this.services = historyRoot.toAbsolutePath().resolveSibling("services");
         this.settings = Settings.load(settingsFile);
+    }
+
+    /** The Compose conversations of the Editor, kept in {@code compose/}. */
+    ComposeThreads threads() {
+        return threads;
     }
 
     synchronized Settings settings() {
@@ -478,6 +486,33 @@ final class UiService {
         return summaries.substitute(analysis.name(), SourceCompactor.compact(files),
                 body -> new BackendClient(BackendConfig.load(backendConfig, token.get().orElse(null)))
                         .call("summarize", body), System.err);
+    }
+
+    /** At most this many characters of shared flows go with a compose; the flows beyond are left out. */
+    static final int MAX_COMPOSED_FLOWS = 200_000;
+
+    /**
+     * The shared flows the proxy calls, as compose gets them: read-only context, so compacted, and each large flow as
+     * its summary, which the backend writes once for each version of the flow (kept in {@code summaries/}).
+     */
+    List<ProxyDocs.SourceFile> composedFlows(BundleReport analysis) throws IOException {
+        List<ProxyDocs.SourceFile> flows = ProxyDocs.files(analysis).stream()
+                .filter(f -> !f.bundle().equals(analysis.name())).toList();
+        if (flows.isEmpty()) return List.of();
+        Map<String, List<ProxyDocs.SourceFile>> byFlow = new LinkedHashMap<>();
+        sent(analysis, flows).forEach(f -> byFlow.computeIfAbsent(f.bundle(), b -> new ArrayList<>()).add(f));
+        List<ProxyDocs.SourceFile> kept = new ArrayList<>();
+        long size = 0;
+        for (Map.Entry<String, List<ProxyDocs.SourceFile>> flow : byFlow.entrySet()) {
+            long length = flow.getValue().stream().mapToLong(f -> f.content().length()).sum();
+            if (size + length > MAX_COMPOSED_FLOWS) {
+                System.err.println("compose: shared flow " + flow.getKey() + " left out (" + length + " characters)");
+                continue;
+            }
+            kept.addAll(flow.getValue());
+            size += length;
+        }
+        return kept;
     }
 
     /** The documentation of the proxy as Markdown, see {@link DocMarkdownRenderer}. */
@@ -965,7 +1000,8 @@ final class UiService {
                     }
                     after = outcome.text();
                 }
-                edits.add(new ProposedEdit(bundle, path, action, String.valueOf(edit.get("reason")), before, after));
+                edits.add(new ProposedEdit(bundle, path, action, String.valueOf(edit.get("reason")), before, after,
+                        action.equals("delete") ? null : changes));
             }
         }
         return edits;

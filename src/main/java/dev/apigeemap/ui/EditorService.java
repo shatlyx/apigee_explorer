@@ -9,6 +9,7 @@ import dev.apigeemap.history.SourceHistory;
 import dev.apigeemap.migration.Finding;
 import dev.apigeemap.migration.FixContext;
 import dev.apigeemap.migration.MigrationReport;
+import dev.apigeemap.migration.ProxyDocs;
 import dev.apigeemap.model.BundleReport;
 import dev.apigeemap.model.Issue;
 import dev.apigeemap.model.Policy;
@@ -107,6 +108,12 @@ final class EditorService {
         }
         return Map.of("proxy", bundles.get(0).name(), "bundles", bundles, "catalog", PolicyCatalog.ENTRIES,
                 "builtIns", VariableFlow.builtIns());
+    }
+
+    /** {@code id} once checked to name a proxy of the settings, as its Compose conversations are kept under it. */
+    String proxy(String id) throws IOException {
+        service.bundleDir(id);
+        return id;
     }
 
     /**
@@ -220,23 +227,134 @@ final class EditorService {
             }
             BundleReport report = service.analyzer().analyze(BundleLocator.locate(copy));
             Map<String, Object> answer = request.get("finding") instanceof Map<?, ?> finding
-                    ? fix(report, finding) : compose(report, before.outline(), copy, request);
+                    ? fix(report, finding) : compose(id, report, before.outline(), copy, request);
             if (answer.containsKey("error")) return answer;
             @SuppressWarnings("unchecked")
             List<UiService.ProposedEdit> edits = (List<UiService.ProposedEdit>) answer.get("edits");
-            for (UiService.ProposedEdit edit : edits) {
-                if (!edit.bundle().equals(report.name())) continue;
-                Path file = inside(copy, edit.path());
-                if (edit.after() == null) {
-                    Files.deleteIfExists(file);
-                } else {
-                    Files.createDirectories(file.getParent());
-                    Files.writeString(file, edit.after());
-                }
-            }
-            answer.put("review", review(before, check(name, copy)));
+            answer.put("review", reviewEdits(name, report.name(), copy, before, edits));
             return answer;
         });
+    }
+
+    /** Writes the edits of the proxy to the copy, and answers what the checks say of it then. */
+    private Map<String, Object> reviewEdits(String name, String bundle, Path copy, Check before,
+                                            List<UiService.ProposedEdit> edits) throws IOException {
+        for (UiService.ProposedEdit edit : edits) {
+            if (!edit.bundle().equals(bundle)) continue;
+            Path file = inside(copy, edit.path());
+            if (edit.after() == null) {
+                Files.deleteIfExists(file);
+            } else {
+                Files.createDirectories(file.getParent());
+                Files.writeString(file, edit.after());
+            }
+        }
+        return review(before, check(name, copy));
+    }
+
+    /**
+     * The edits of an earlier Compose answer, {@code {thread, turn}}, made again on the text as it is now, buffers
+     * included, without asking the backend: answers like {@link #assist}. A change whose text to replace is no longer
+     * there exactly once, a file to create that exists, a file to delete that is gone and a whole new content for a
+     * file that changed since go to {@code notApplied}.
+     */
+    Map<String, Object> replay(String id, Map<?, ?> request) throws IOException {
+        String name = bundles(id).keySet().iterator().next();
+        Map<String, Object> thread = service.threads().get(id, String.valueOf(request.get("thread")))
+                .orElseThrow(() -> new UiService.UiException(404, "This conversation is gone"));
+        List<Map<String, Object>> turns = ComposeThreads.turns(thread);
+        int index = request.get("turn") instanceof Number n ? n.intValue() : -1;
+        if (index < 0 || index >= turns.size()) throw new UiService.UiException(404, "This answer is gone");
+        Map<String, Object> turn = turns.get(index);
+        return inShadow(id, request, copy -> {
+            Check before = check(name, copy);
+            if (!before.analyzed()) {
+                throw new UiService.UiException(409, "Fix the XML of the proxy first: it cannot be analyzed");
+            }
+            String bundle = name;
+            List<UiService.ProposedEdit> edits = new ArrayList<>();
+            List<Map<String, Object>> notApplied = new ArrayList<>();
+            if (turn.get("edits") instanceof List<?> stored) {
+                for (Object item : stored) {
+                    if (item instanceof Map<?, ?> edit) replayed(bundle, copy, edit, edits, notApplied);
+                }
+            }
+            Map<String, Object> answer = new LinkedHashMap<>();
+            answer.put("summary", String.valueOf(turn.get("summary")));
+            answer.put("warnings", turn.get("warnings") instanceof List<?> w ? w : List.of());
+            answer.put("edits", edits);
+            answer.put("notApplied", notApplied);
+            answer.put("review", reviewEdits(name, bundle, copy, before, edits));
+            answer.put("thread", thread.get("id"));
+            answer.put("turn", index);
+            return answer;
+        });
+    }
+
+    /**
+     * Whether changes that only add text around what they replace are in {@code text} already: their text to replace
+     * is still there, so making them again would add it twice.
+     */
+    private static boolean alreadyIn(String text, List<?> changes) {
+        for (Object item : changes) {
+            if (!(item instanceof Map<?, ?> change) || !(change.get("old") instanceof String old)
+                    || !(change.get("new") instanceof String replacement) || old.isEmpty()
+                    || !replacement.contains(old) || !text.replace("\r\n", "\n").contains(replacement.replace("\r\n", "\n"))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void replayed(String bundle, Path copy, Map<?, ?> edit, List<UiService.ProposedEdit> edits,
+                          List<Map<String, Object>> notApplied) throws IOException {
+        String editBundle = String.valueOf(edit.get("bundle"));
+        String path = String.valueOf(edit.get("path"));
+        String action = String.valueOf(edit.get("action"));
+        String reason = String.valueOf(edit.get("reason"));
+        if (!editBundle.equals(bundle)) {
+            // shared flows are read-only here; the page lists them as left out
+            edits.add(new UiService.ProposedEdit(editBundle, path, action, reason, null, null, null));
+            return;
+        }
+        Path file = inside(copy, path);
+        String current = Files.isRegularFile(file) ? text(file) : null;
+        String problem = null;
+        String after = null;
+        List<?> changes = edit.get("changes") instanceof List<?> list && !list.isEmpty() ? list : null;
+        switch (action) {
+            case "delete" -> {
+                if (current == null) problem = "the file is already gone";
+            }
+            case "create" -> {
+                if (current != null) problem = "the file exists now";
+                else after = edit.get("content") instanceof String content ? content : "";
+            }
+            default -> {
+                if (current == null) {
+                    problem = "the file is gone";
+                } else if (changes != null && alreadyIn(current, changes)) {
+                    problem = "these changes are already in the file";
+                } else if (changes != null) {
+                    TextEdits.Outcome outcome = TextEdits.apply(current, changes);
+                    problem = outcome.problem();
+                    after = outcome.text();
+                } else if (current.equals(edit.get("before")) && edit.get("content") instanceof String content) {
+                    after = content;
+                } else {
+                    problem = "the file changed since this answer";
+                }
+            }
+        }
+        if (problem != null) {
+            Map<String, Object> refused = new LinkedHashMap<>();
+            refused.put("bundle", editBundle);
+            refused.put("path", path);
+            refused.put("message", "Not applied: " + problem + ".");
+            notApplied.add(refused);
+            return;
+        }
+        edits.add(new UiService.ProposedEdit(editBundle, path, action, reason, current, after, changes));
     }
 
     /** Plays one call through the proxy as it would be with {@code buffers} saved; see {@link Simulator}. */
@@ -326,10 +444,22 @@ final class EditorService {
         return service.ask("fix", new FixContextRenderer().model(context), context.files());
     }
 
-    private Map<String, Object> compose(BundleReport report, EditorOutline outline, Path copy, Map<?, ?> request)
-            throws IOException {
+    /**
+     * Asks the backend what {@code request} says, within the conversation {@code thread} when given (a new one
+     * otherwise), and records the answer in it; {@code again} asks the last request again in place of its answer.
+     */
+    private Map<String, Object> compose(String id, BundleReport report, EditorOutline outline, Path copy,
+                                        Map<?, ?> request) throws IOException {
         if (!(request.get("request") instanceof String asked) || asked.isBlank()) {
             throw new UiService.UiException(400, "Say what you need");
+        }
+        String threadId = request.get("thread") instanceof String t && !t.isBlank() ? t : null;
+        boolean again = Boolean.TRUE.equals(request.get("again")) && threadId != null;
+        List<Map<String, Object>> earlier = List.of();
+        if (threadId != null) {
+            earlier = ComposeThreads.turns(service.threads().get(id, threadId)
+                    .orElseThrow(() -> new UiService.UiException(404, "This conversation is gone")));
+            if (again && !earlier.isEmpty()) earlier = earlier.subList(0, earlier.size() - 1);
         }
         Map<String, String> texts = new LinkedHashMap<>();
         for (EditorFile file : files(copy)) {
@@ -355,14 +485,24 @@ final class EditorService {
         body.put("proxy", report.name());
         body.put("request", asked);
         if (request.get("selection") != null) body.put("selection", request.get("selection"));
+        List<ProxyDocs.SourceFile> flows = service.composedFlows(report);
+        if (!flows.isEmpty()) body.put("sharedFlows", flows);
         body.put("flow", outline.text());
         body.put("files", files);
         if (!selection.unsent().isEmpty()) body.put("unsent", selection.manifest());
+        if (!earlier.isEmpty()) body.put("thread", ComposeThreads.sent(earlier));
         Map<String, Object> answer = service.ask("compose", body, files);
-        if (!answer.containsKey("error") && !selection.unsent().isEmpty()) {
+        if (answer.containsKey("error")) return answer;
+        if (!selection.unsent().isEmpty()) {
             answer.put("unsent", List.copyOf(selection.unsent().keySet()));
             answer.put("needed", selection.named(answer.get("summary") + "\n" + answer.get("warnings")));
         }
+        String selected = request.get("selection") instanceof Map<?, ?> picked && picked.get("path") instanceof String p
+                ? p : null;
+        Map<String, Object> thread = service.threads().record(id, threadId,
+                ComposeThreads.turn(asked, selected, answer), again);
+        answer.put("thread", thread.get("id"));
+        answer.put("turn", ComposeThreads.turns(thread).size() - 1);
         return answer;
     }
 

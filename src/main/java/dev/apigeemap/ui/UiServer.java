@@ -207,6 +207,21 @@ public final class UiServer {
                     editor.check(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
             case "POST /api/editor/assist" -> json(exchange, 200,
                     editor.assist(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
+            case "GET /api/compose/threads" -> json(exchange, 200, service.threads().list(editor.proxy(query.get("id"))));
+            case "GET /api/compose/thread" -> json(exchange, 200,
+                    service.threads().get(editor.proxy(query.get("id")), query.get("thread"))
+                            .orElseThrow(() -> new UiService.UiException(404, "This conversation is gone")));
+            case "POST /api/compose/replay" -> json(exchange, 200,
+                    editor.replay(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
+            case "POST /api/compose/applied" -> {
+                service.threads().markApplied(editor.proxy(query.get("id")), query.get("thread"),
+                        Integer.parseInt(query.getOrDefault("turn", "-1")));
+                json(exchange, 200, Map.of());
+            }
+            case "POST /api/compose/delete" -> {
+                service.threads().delete(editor.proxy(query.get("id")), query.get("thread"));
+                json(exchange, 200, Map.of());
+            }
             case "POST /api/editor/simulate" -> json(exchange, 200,
                     editor.simulate(query.get("id"), (Map<?, ?>) Json.parse(body(exchange))));
             case "POST /api/editor/search" -> json(exchange, 200,

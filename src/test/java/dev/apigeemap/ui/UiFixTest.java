@@ -206,6 +206,114 @@ class UiFixTest {
     }
 
     @Test
+    void keepsAComposeConversationAndSendsItsEarlierTurns() throws Exception {
+        Map<?, ?> first = (Map<?, ?>) Json.parse(send("/api/editor/assist?id=factorization-api", "POST",
+                Json.write(Map.of("request", "Add a limit"))).body());
+        String thread = (String) first.get("thread");
+        assertEquals(0, ((Number) first.get("turn")).intValue());
+        assertFalse(composed.get(0).containsKey("thread"), "the first request opens the conversation");
+
+        assertEquals(200, post("/api/compose/applied?id=factorization-api&thread=" + thread + "&turn=0").statusCode());
+        Map<?, ?> second = (Map<?, ?>) Json.parse(send("/api/editor/assist?id=factorization-api", "POST",
+                Json.write(Map.of("request", "Make it 10", "thread", thread))).body());
+        assertEquals(thread, second.get("thread"));
+        assertEquals(1, ((Number) second.get("turn")).intValue());
+        assertEquals(List.of(Map.of("asked", "Add a limit", "answered", "Adds a limit", "changes",
+                List.of("factorization-api/policies/Q-New.xml (create)"), "applied", true)),
+                composed.get(1).get("thread"));
+
+        // asked again in place of the last answer: the earlier turns only, and still two turns
+        send("/api/editor/assist?id=factorization-api", "POST",
+                Json.write(Map.of("request", "Make it 10", "thread", thread, "again", true, "include", List.of())));
+        assertEquals(1, ((List<?>) composed.get(2).get("thread")).size());
+
+        List<?> threads = (List<?>) Json.parse(get("/api/compose/threads?id=factorization-api").body());
+        assertEquals(1, threads.size());
+        Map<?, ?> listed = (Map<?, ?>) threads.get(0);
+        assertEquals("Add a limit", listed.get("title"));
+        assertEquals(2, ((Number) listed.get("turns")).intValue());
+        assertEquals(1, ((Number) listed.get("applied")).intValue());
+        Map<?, ?> stored = (Map<?, ?>) Json.parse(get("/api/compose/thread?id=factorization-api&thread=" + thread).body());
+        Map<?, ?> edit = (Map<?, ?>) ((List<?>) ((Map<?, ?>) ((List<?>) stored.get("turns")).get(0)).get("edits")).get(0);
+        assertEquals("<Quota name=\"Q-New\">", edit.get("content"));
+        assertFalse(edit.containsKey("after"), stored.toString());
+
+        assertEquals(404, get("/api/compose/thread?id=factorization-api&thread=../settings").statusCode());
+        assertEquals(200, post("/api/compose/delete?id=factorization-api&thread=" + thread).statusCode());
+        assertEquals("[]", get("/api/compose/threads?id=factorization-api").body());
+    }
+
+    @Test
+    void appliesAnEarlierAnswerToTheTextAsItIsNow() throws Exception {
+        Path endpoint = bundle.resolve("proxies/default.xml");
+        Map<String, Object> changed = new LinkedHashMap<>();
+        changed.put("bundle", "factorization-api");
+        changed.put("path", "proxies/default.xml");
+        changed.put("action", "replace");
+        changed.put("content", null);
+        changed.put("edits", List.of(Map.of("old", "<ProxyEndpoint name=\"default\">",
+                "new", "<ProxyEndpoint name=\"default\">\n    <!-- top -->")));
+        changed.put("reason", "Comment");
+        composeEdits = List.of(changed, Map.of("bundle", "factorization-api", "path", "policies/Q-New.xml",
+                "action", "create", "content", "<Quota name=\"Q-New\"/>\n", "reason", "New policy"));
+        Map<?, ?> answer = (Map<?, ?>) Json.parse(send("/api/editor/assist?id=factorization-api", "POST",
+                Json.write(Map.of("request", "Comment the endpoint"))).body());
+        String thread = (String) answer.get("thread");
+
+        // the file changed since, elsewhere than the text to replace, and the policy now exists
+        String now = Files.readString(endpoint) + "<!-- later -->\n";
+        Files.writeString(endpoint, now);
+        Files.writeString(bundle.resolve("policies/Q-New.xml"), "<Quota name=\"Q-New\"/>\n");
+        HttpResponse<String> response = send("/api/compose/replay?id=factorization-api", "POST",
+                Json.write(Map.of("thread", thread, "turn", 0)));
+
+        assertEquals(200, response.statusCode(), response.body());
+        Map<?, ?> replayed = (Map<?, ?>) Json.parse(response.body());
+        Map<?, ?> edit = (Map<?, ?>) ((List<?>) replayed.get("edits")).get(0);
+        assertEquals(now, edit.get("before"));
+        assertTrue(((String) edit.get("after")).contains("<!-- top -->") && ((String) edit.get("after"))
+                .contains("<!-- later -->"), response.body());
+        assertEquals(List.of(Map.of("bundle", "factorization-api", "path", "policies/Q-New.xml",
+                "message", "Not applied: the file exists now.")), replayed.get("notApplied"));
+        assertEquals(now, Files.readString(endpoint), "nothing is written");
+
+        // once applied, the comment it adds is there: made again, it would be added twice
+        Files.writeString(endpoint, (String) edit.get("after"));
+        Map<?, ?> again = (Map<?, ?>) Json.parse(send("/api/compose/replay?id=factorization-api", "POST",
+                Json.write(Map.of("thread", thread, "turn", 0))).body());
+        assertEquals(List.of(), again.get("edits"));
+        assertEquals("Not applied: these changes are already in the file.",
+                ((Map<?, ?>) ((List<?>) again.get("notApplied")).get(0)).get("message"));
+        assertEquals(404, send("/api/compose/replay?id=factorization-api", "POST",
+                Json.write(Map.of("thread", thread, "turn", 3))).statusCode());
+    }
+
+    @Test
+    void composeGetsTheSharedFlowsCompactedAndApart() throws Exception {
+        copy(EXAMPLES.resolve("orders-api"), tmp.resolve("proxies/orders-api"));
+        copy(EXAMPLES.resolve("sharedflows"), tmp.resolve("sharedflows"));
+        server.stop();
+        Path settings = tmp.resolve("settings.json");
+        new Settings(tmp.resolve("proxies").toString(), List.of(tmp.resolve("sharedflows").toString()),
+                tmp.resolve("out").toString(), List.of(), Map.of(), Map.of(), List.of()).save(settings);
+        server = UiServer.start(settings, tmp.resolve("history"), tmp.resolve("backend.properties"), 0);
+        send("/api/token", "PUT", Json.write(Map.of("token", "t")));
+
+        HttpResponse<String> response = send("/api/editor/assist?id=orders-api", "POST",
+                Json.write(Map.of("request", "Explain the security")));
+
+        assertEquals(200, response.statusCode(), response.body());
+        Map<?, ?> sent = composed.get(0);
+        List<Map<?, ?>> flows = ((List<?>) sent.get("sharedFlows")).stream().<Map<?, ?>>map(f -> (Map<?, ?>) f).toList();
+        assertEquals(java.util.Set.of("sf-security", "sf-logging"),
+                flows.stream().map(f -> f.get("bundle")).collect(java.util.stream.Collectors.toSet()), sent.toString());
+        assertTrue(flows.stream().noneMatch(f -> ((String) f.get("content")).contains("\n    <")),
+                "compacted: no indentation");
+        assertTrue(((List<?>) sent.get("files")).stream().allMatch(f -> "orders-api".equals(((Map<?, ?>) f).get("bundle"))),
+                "the files to change are the proxy's only");
+    }
+
+    @Test
     void anUnreachableBackendAnswersTheUsualMessage() throws Exception {
         backend.stop(0);
         HttpResponse<String> response = send("/api/editor/assist?id=factorization-api", "POST",
