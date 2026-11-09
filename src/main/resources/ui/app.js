@@ -2995,10 +2995,14 @@ async function editorView(id, isCurrent) {
         }
       }});
     const sendButton = h('button', {type: 'button', class: 'primary', disabled: true, onclick: () => sendInput()}, 'Send');
+    const forced = new Set(); // paths the user checked to send in full
+    const forcedView = h('details', {class: 'compose-forced'});
+    renderForced();
     const dialog = h('dialog', {class: 'wide compose-dialog'},
       h('div', {class: 'compose-head'}, h('h2', {}, 'Compose'), title, h('span', {class: 'grow'}), listButton, newButton),
       list, thread,
       h('div', {class: 'compose-input'}, input, sendButton),
+      forcedView,
       h('p', {class: 'sub'}, 'Your unsaved text is taken into account, and nothing changes until you apply and save.'),
       h('div', {class: 'actions'}, h('button', {type: 'button', onclick: () => dialog.close()}, 'Close')));
     dialog.addEventListener('close', () => {
@@ -3100,7 +3104,7 @@ async function editorView(id, isCurrent) {
       try {
         result = await api.editorAssist(id, {buffers: buffers(), request: asked,
           selection: options.selection || selection(), open: openPath(), thread: threadId, again: again || null,
-          include: options.include || null});
+          include: [...new Set([...forced, ...(options.include || [])])]});
       } catch (error) {
         result = {error: error.message};
       }
@@ -3125,6 +3129,39 @@ async function editorView(id, isCurrent) {
         if (!input.value) input.value = asked;
       }
       if (dialog.open) sendButton.disabled = !input.value.trim();
+    }
+
+    /**
+     * The policies and resources of the proxy, to check those to send in full: when the proxy is too large to be sent
+     * whole, the others may go as an outline. The endpoints always go in full.
+     */
+    function renderForced() {
+      const files = (bundleOf(root)?.files || []).filter(f => f.text && !opened.get(fileKey(root, f.path))?.deleted
+        && /^(policies|resources)\//.test(f.path) && !/^resources\/(node|hosted)\//.test(f.path));
+      for (const path of [...forced]) if (!files.some(f => f.path === path)) forced.delete(path);
+      const open = forcedView.open;
+      const filter = h('input', {type: 'search', placeholder: 'Filter files', 'aria-label': 'Filter files',
+        oninput: () => {
+          const text = filter.value.trim().toLowerCase();
+          [...items.children].forEach(li => { li.hidden = !!text && !li.dataset.path.toLowerCase().includes(text); });
+        }});
+      const items = h('ul', {}, files.map(f => h('li', {'data-path': f.path}, h('label', {},
+        h('input', {type: 'checkbox', checked: forced.has(f.path), onchange: e => {
+          if (e.target.checked) forced.add(f.path); else forced.delete(f.path);
+          count.textContent = label();
+          clear.hidden = !forced.size;
+        }}), ' ', f.path))));
+      const label = () => forced.size ? 'Send in full: ' + [...forced].map(p => p.slice(p.lastIndexOf('/') + 1)).join(', ')
+        : 'Files to send in full';
+      const count = h('span', {}, label());
+      const clear = h('button', {type: 'button', class: 'link', hidden: !forced.size,
+        onclick: () => { forced.clear(); renderForced(); }}, 'Uncheck all');
+      forcedView.replaceChildren(...[h('summary', {class: 'meta'}, count),
+        h('p', {class: 'sub'}, 'When the proxy is too large to be sent whole, the files checked here go in full with the endpoints, the open file and the files the request names; the others may only be outlined.'),
+        files.length > 12 ? filter : null,
+        files.length ? items : h('p', {class: 'meta'}, 'No policy or resource in this proxy.'),
+        clear].filter(Boolean));
+      forcedView.open = open;
     }
 
     function askedView(turn) {

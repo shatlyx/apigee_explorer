@@ -83,7 +83,7 @@ record ComposeSelection(List<String> sent, Map<String, String> unsent) {
         long size = wanted.stream().mapToLong(p -> files.get(p).length()).sum();
         if (size > budget) {
             throw new TooLarge("Even the endpoints and the files this request needs are too large to be sent ("
-                    + size + " characters, at most " + budget + "): close or name fewer large files");
+                    + size + " characters, at most " + budget + "): close, name or check fewer large files");
         }
         // then the other policies, which the request may change, and the small resources, smallest first
         for (String folder : List.of("policies/", "resources/")) {
