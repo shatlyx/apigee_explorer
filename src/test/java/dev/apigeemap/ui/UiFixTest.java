@@ -552,7 +552,8 @@ class UiFixTest {
         HttpResponse<String> response = post("/api/tests?id=factorization-api");
         assertEquals(200, response.statusCode(), response.body());
         Map<?, ?> prepared = (Map<?, ?>) Json.parse(response.body());
-        assertEquals(List.of("plan", "written", "current", "targets", "uncovered"), List.copyOf(prepared.keySet()));
+        assertEquals(List.of("plan", "written", "current", "targets", "uncovered", "profile"), List.copyOf(prepared.keySet()),
+                "with the detected profile, which the page shows again");
         List<?> targets = (List<?>) prepared.get("targets");
         assertTrue(!targets.isEmpty() && targets.equals(planned.get(0).get("targets")), "sent to be covered");
         assertEquals(targets.stream().map(t -> ((Map<?, ?>) t).get("id")).toList(), prepared.get("uncovered"),
@@ -563,10 +564,7 @@ class UiFixTest {
         assertEquals("factorization-api", planned.get(0).get("proxy"));
         assertEquals(Map.of("kind", "standard", "grants", List.of(), "operations", List.of()),
                 planned.get(0).get("profile"));
-        Map<?, ?> kept = new java.util.LinkedHashMap<>((Map<?, ?>) Json.parse(get("/api/tests?id=factorization-api")
-                .body()));
-        kept.remove("profile");
-        assertEquals(prepared, kept, "kept");
+        assertEquals(prepared, Json.parse(get("/api/tests?id=factorization-api").body()), "kept");
 
         HttpResponse<String> forced = send("/api/tests?id=factorization-api", "POST", Json.write(Map.of(
                 "profile", "authorizationServer", "loginForm", Map.of("user", "username", "password", "pass\nword"))));
@@ -575,6 +573,7 @@ class UiFixTest {
                 "loginForm", Map.of("user", "username", "password", "password")), planned.get(1).get("profile"),
                 "chosen, with only field names passed on");
         prepared = (Map<?, ?>) Json.parse(forced.body());
+        assertEquals("standard", ((Map<?, ?>) prepared.get("profile")).get("kind"), "the detected one, not the chosen one");
 
         HttpResponse<String> badUrl = send("/api/tests/run?id=factorization-api", "POST",
                 Json.write(Map.of("edge", "ftp://edge", "hybrid", "http://127.0.0.1:1")));
@@ -605,10 +604,8 @@ class UiFixTest {
         backend.stop(0);
         assertEquals(Map.of("error", BackendClient.UNAVAILABLE),
                 Json.parse(post("/api/tests?id=factorization-api").body()));
-        Map<?, ?> still = new java.util.LinkedHashMap<>((Map<?, ?>) Json.parse(get("/api/tests?id=factorization-api")
-                .body()));
-        still.remove("profile");
-        assertEquals(prepared, still, "a failure keeps what was prepared");
+        assertEquals(prepared, Json.parse(get("/api/tests?id=factorization-api").body()),
+                "a failure keeps what was prepared");
     }
 
     @Test

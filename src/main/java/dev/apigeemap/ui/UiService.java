@@ -651,7 +651,10 @@ final class UiService {
         }
         TestPlans.Plan plan = answer instanceof Map<?, ?> reply ? TestPlans.plan(reply) : null;
         if (plan == null) return Map.of("error", BackendClient.UNAVAILABLE);
-        return testPlan(plans.put(key(analysis), ProxyDocs.fingerprint(files), plan), true, targets);
+        Map<String, Object> m = new LinkedHashMap<>(testPlan(plans.put(key(analysis), ProxyDocs.fingerprint(files), plan),
+                true, targets));
+        m.put("profile", ProxyProfile.of(analysis));
+        return m;
     }
 
     /** What a test plan of the proxy must cover, with what its migration changes. */
