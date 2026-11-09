@@ -52,6 +52,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -455,8 +456,11 @@ final class UiService {
     private Map<String, Object> writeDocumentation(String id) throws IOException {
         BundleReport analysis = analyze(settings(), id);
         List<ProxyDocs.SourceFile> files = ProxyDocs.files(analysis);
-        List<ProxyDocs.SourceFile> sent = sent(analysis, files);
+        AtomicBoolean failed = new AtomicBoolean();
+        List<ProxyDocs.SourceFile> sent = sent(analysis, files, failed);
         if (sent.stream().mapToLong(f -> f.content().length()).sum() > MAX_DOCUMENTED) {
+            // too large only because the shared flows could not be summarized: the backend failed
+            if (failed.get()) return Map.of("error", BackendClient.UNAVAILABLE);
             throw new UiException(413, "This proxy is too large to be documented at once");
         }
         Map<String, Object> body = new LinkedHashMap<>();
@@ -483,9 +487,21 @@ final class UiService {
      * summary, which the backend writes first when it has none for the flow as it is.
      */
     private List<ProxyDocs.SourceFile> sent(BundleReport analysis, List<ProxyDocs.SourceFile> files) {
-        return summaries.substitute(analysis.name(), SourceCompactor.compact(files),
-                body -> new BackendClient(BackendConfig.load(backendConfig, token.get().orElse(null)))
-                        .call("summarize", body), System.err);
+        return sent(analysis, files, new AtomicBoolean());
+    }
+
+    /** As {@link #sent(BundleReport, List)}, telling in {@code failed} whether the backend failed a summary. */
+    private List<ProxyDocs.SourceFile> sent(BundleReport analysis, List<ProxyDocs.SourceFile> files,
+                                            AtomicBoolean failed) {
+        return summaries.substitute(analysis.name(), SourceCompactor.compact(files), body -> {
+            try {
+                return new BackendClient(BackendConfig.load(backendConfig, token.get().orElse(null)))
+                        .call("summarize", body);
+            } catch (IOException | RuntimeException e) {
+                failed.set(true);
+                throw e;
+            }
+        }, System.err);
     }
 
     /** At most this many characters of shared flows go with a compose; the flows beyond are left out. */
@@ -600,8 +616,10 @@ final class UiService {
         Settings s = settings();
         BundleReport analysis = analyze(s, id);
         List<ProxyDocs.SourceFile> files = ProxyDocs.files(analysis);
-        List<ProxyDocs.SourceFile> compacted = sent(analysis, files);
+        AtomicBoolean failed = new AtomicBoolean();
+        List<ProxyDocs.SourceFile> compacted = sent(analysis, files, failed);
         if (compacted.stream().mapToLong(f -> f.content().length()).sum() > MAX_PLANNED) {
+            if (failed.get()) return Map.of("error", BackendClient.UNAVAILABLE);
             throw new UiException(413, "This proxy is too large to plan its tests at once");
         }
         Map<String, Object> body = new LinkedHashMap<>();
