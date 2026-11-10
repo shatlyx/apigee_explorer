@@ -116,7 +116,7 @@ public final class BundleAnalyzer {
         return report;
     }
 
-    static Element descriptor(Path dir) throws IOException {
+    public static Element descriptor(Path dir) throws IOException {
         for (Path file : Xml.xmlFiles(dir)) {
             Element root = Xml.parse(file);
             if (root.getTagName().equals("APIProxy") || root.getTagName().equals("SharedFlowBundle")) return root;

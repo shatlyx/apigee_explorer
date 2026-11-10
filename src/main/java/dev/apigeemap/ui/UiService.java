@@ -1437,6 +1437,38 @@ final class UiService {
         return migrator(settings()).migrate(analysis, null);
     }
 
+    /** A client of the backend, with the token of the settings. */
+    BackendClient backend() throws IOException {
+        return new BackendClient(BackendConfig.load(backendConfig, token.get().orElse(null)));
+    }
+
+    /** Where the histories of bundles are kept; other app data lives next to it. */
+    Path historyRoot() {
+        return historyRoot;
+    }
+
+    /** The proxies root of the settings, absolute; refused when it is not set. */
+    Path proxiesRoot() {
+        Settings s = settings();
+        if (s.proxiesRoot().isEmpty()) throw new UiException(409, "Set the proxies folder in Settings first");
+        return Path.of(s.proxiesRoot()).toAbsolutePath().normalize();
+    }
+
+    /** The folders holding an apiproxy/ bundle under the proxies root. */
+    List<Path> proxyFolders() throws IOException {
+        return proxyDirs(settings());
+    }
+
+    /** The id of the proxy in this folder. */
+    String proxyId(Path dir) {
+        return id(settings(), dir);
+    }
+
+    /** The shared flow folders of the settings that exist. */
+    List<Path> sharedFlowFolders() {
+        return settings().sharedFlowPaths().stream().filter(Files::isDirectory).toList();
+    }
+
     /** The proxy folder for an id, refusing anything outside the proxies root. */
     private static Path resolve(Settings s, String id) {
         if (s.proxiesRoot().isEmpty()) throw new UiException(409, "Set the proxies folder in Settings first");

@@ -405,3 +405,7 @@ textarea.bad { border-color: var(--err); }
   .compose-head { flex-wrap: wrap; }
 }
 .compose-changes .editor-diff { height: 34vh; }
+
+/* Snapshots */
+.sub.warn { color: var(--warn); }
+dialog input[type=text] { width: 100%; box-sizing: border-box; }

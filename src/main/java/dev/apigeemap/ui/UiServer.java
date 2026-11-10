@@ -48,8 +48,10 @@ public final class UiServer {
     private final EditorService editor;
     private final MockIdp idp;
     private final HttpServer server;
+    private final SnapshotService snapshots;
 
     private UiServer(UiService service, EditorService editor, MockIdp idp, HttpServer server) {
+        this.snapshots = new SnapshotService(service);
         this.service = service;
         this.editor = editor;
         this.idp = idp;
@@ -236,6 +238,21 @@ public final class UiServer {
             case "POST /api/idp/start" -> json(exchange, 200, idp.start());
             case "POST /api/idp/stop" -> json(exchange, 200, idp.stop());
             case "POST /api/idp/clear" -> json(exchange, 200, idp.clear());
+            case "GET /api/snapshots" -> json(exchange, 200, snapshots.list());
+            case "POST /api/snapshots/send" -> {
+                Object request = Json.parse(body(exchange));
+                Object label = request instanceof Map<?, ?> m ? m.get("label") : null;
+                json(exchange, 200, snapshots.send(query.get("id"), label == null ? "" : String.valueOf(label)));
+            }
+            case "GET /api/snapshots/download" -> {
+                SnapshotService.Download download = snapshots.download(query.get("id"));
+                exchange.getResponseHeaders().add("Content-Disposition",
+                        "attachment; filename=\"" + download.fileName() + "\"");
+                send(exchange, 200, "application/zip", download.bytes());
+            }
+            case "POST /api/snapshots/import" -> json(exchange, 200,
+                    snapshots.importSnapshot(query.get("id"), "true".equals(query.get("apply"))));
+            case "POST /api/snapshots/delete" -> json(exchange, 200, snapshots.delete(query.get("id")));
             default -> json(exchange, 404, Map.of("error", "Not found: " + method + " " + path));
         }
     }

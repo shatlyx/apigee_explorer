@@ -105,6 +105,10 @@ const api = {
   editorSimulate: (id, call) => request('POST', '/api/editor/simulate?id=' + encodeURIComponent(id), call),
   editorSearch: (id, search) => request('POST', '/api/editor/search?id=' + encodeURIComponent(id), search),
   editorRename: (id, change) => request('POST', '/api/editor/rename?id=' + encodeURIComponent(id), change),
+  snapshots: () => request('GET', '/api/snapshots'),
+  sendSnapshot: (id, label) => request('POST', '/api/snapshots/send?id=' + encodeURIComponent(id), {label}),
+  importSnapshot: (id, apply) => request('POST', '/api/snapshots/import?id=' + encodeURIComponent(id) + (apply ? '&apply=true' : '')),
+  deleteSnapshot: id => request('POST', '/api/snapshots/delete?id=' + encodeURIComponent(id)),
 };
 
 function stepQuery(id, bundle, step) {
@@ -351,7 +355,8 @@ let currentHash = location.hash;
 /** Renders the view for the current hash; results of a previous, slower render are dropped. */
 async function route() {
   const [name = 'proxies', ...rest] = location.hash.replace(/^#\/?/, '').split('/');
-  const routes = {proxies: proxiesView, proxy: proxyView, editor: editorView, overview: overviewView, idp: idpView, settings: settingsView};
+  const routes = {proxies: proxiesView, proxy: proxyView, editor: editorView, overview: overviewView, snapshots: snapshotsView,
+    idp: idpView, settings: settingsView};
   const render = routes[name] || proxiesView;
   document.querySelectorAll('[data-nav]').forEach(a =>
     a.classList.toggle('active', a.dataset.nav === (name === 'proxy' || name === 'editor' ? 'proxies' : name)));
@@ -624,7 +629,7 @@ async function proxyView(id) {
         h('p', {class: 'meta'}, h('a', {href: '#/proxies'}, '← Proxies')),
         h('h1', {}, summary.name),
         h('p', {class: 'meta mono'}, detail.path), status),
-      h('div', {class: 'actions'}, analyzeButton)));
+      h('div', {class: 'actions'}, analyzeButton, snapshotButton(id))));
     if (summary.error) page.append(errorBox({message: 'Analysis failed: ' + summary.error}));
     page.append(h('div', {style: 'margin-top:16px'}, empty('Analyze this proxy to see its findings and its changes.',
       h('a', {class: 'button', href: '#/editor/' + encodeURIComponent(id)}, 'Open the Editor'))));
@@ -645,6 +650,7 @@ async function proxyView(id) {
     h('div', {class: 'actions'},
       analyzeButton,
       h('a', {class: 'button', href: '/api/report?id=' + encodeURIComponent(id)}, 'Download report'),
+      snapshotButton(id),
       applyButton)));
 
   if (summary.migrated) {
@@ -3613,6 +3619,190 @@ async function editorView(id, isCurrent) {
 // ---------------------------------------------------------------------------------------------------------------
 // Overview
 // ---------------------------------------------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------------------------------------------
+// Snapshots
+// ---------------------------------------------------------------------------------------------------------------
+
+/** The list of the team's snapshots, as last asked: going back to the page shows it without asking again. */
+const snapshotState = {list: null, asked: null};
+
+function size(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KiB';
+  return (bytes / 1024 / 1024).toFixed(1) + ' MiB';
+}
+
+/** Send snapshot: the proxy and every file of the shared flows it calls, as saved, for the team. */
+function snapshotButton(id) {
+  const button = h('button', {type: 'button', title: 'Sends every file of this proxy and of the shared flows it calls, as saved, '
+      + 'so that another workstation can download or import them', onclick: () => sendSnapshot(id, button)}, 'Send snapshot');
+  return button;
+}
+
+async function sendSnapshot(id, button) {
+  const label = await new Promise(resolve => {
+    const input = h('input', {type: 'text', maxlength: 200, 'aria-label': 'Label', placeholder: 'Label (optional), e.g. before the review'});
+    const dialog = h('dialog', {},
+      h('h2', {}, 'Send a snapshot'),
+      h('p', {}, 'Every file of this proxy and of the shared flows it calls goes as it is saved on disk, resources and jars '
+        + 'included. Unsaved changes of the Editor do not go. Any workstation of the team can then download or import it.'),
+      input,
+      h('div', {class: 'actions'},
+        h('button', {type: 'button', onclick: () => { dialog.close(); resolve(null); }}, 'Cancel'),
+        h('button', {type: 'button', class: 'primary', onclick: () => { const text = input.value.trim(); dialog.close(); resolve(text); }}, 'Send')));
+    dialog.addEventListener('close', () => { dialog.remove(); resolve(null); });
+    input.addEventListener('keydown', event => { if (event.key === 'Enter') dialog.querySelector('.primary').click(); });
+    document.body.append(dialog);
+    dialog.showModal();
+    input.focus();
+  });
+  if (label === null) return;
+  button.disabled = true;
+  button.replaceChildren(h('span', {class: 'spinner'}), ' Sending…');
+  try {
+    const sent = await api.sendSnapshot(id, label);
+    snapshotState.list = null;
+    toast('Snapshot sent: ' + sent.files + ' files, ' + size(sent.snapshot.size)
+      + (sent.missing.length ? '. Not found, so not sent: ' + sent.missing.join(', ') : ''), sent.missing.length > 0);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+    button.replaceChildren('Send snapshot');
+  }
+}
+
+async function snapshotsView() {
+  const page = h('div', {});
+  const refresh = h('button', {type: 'button', onclick: () => { snapshotState.list = null; route(); }}, 'Refresh');
+  page.append(h('div', {class: 'head'},
+    h('div', {}, h('h1', {}, 'Snapshots'),
+      h('p', {class: 'meta'}, 'Proxies sent with their shared flows by the workstations of the team, every file as it was saved. '
+        + 'Send one from the page of a proxy.')),
+    h('div', {class: 'actions'}, refresh)));
+  if (!snapshotState.list) {
+    snapshotState.list = (await api.snapshots()).snapshots;
+    snapshotState.asked = new Date();
+  }
+  const list = snapshotState.list;
+  page.append(h('p', {class: 'sub'}, 'List as of ', snapshotState.asked.toLocaleString(), '.'));
+  if (!list.length) {
+    page.append(h('div', {style: 'margin-top:16px'}, empty('No snapshot yet.', h('a', {class: 'button', href: '#/proxies'}, 'Open the proxies'))));
+    return page;
+  }
+  page.append(table(['Proxy', 'Label', 'Sent', {label: 'Size', class: 'num'}, 'Shared flows', ''], list.map(snapshot => {
+    const flows = snapshot.bundles.filter(b => b.name !== snapshot.proxy).map(b => b.name);
+    const download = h('button', {type: 'button', onclick: () => downloadSnapshot(snapshot, download)}, 'Download');
+    const importButton = h('button', {type: 'button', onclick: () => importSnapshot(snapshot, importButton)}, 'Import…');
+    const remove = h('button', {type: 'button', onclick: () => deleteSnapshot(snapshot, remove)}, 'Delete');
+    return h('tr', {},
+      h('td', {}, h('b', {}, snapshot.proxy)),
+      h('td', {}, snapshot.label || h('span', {class: 'sub'}, '—')),
+      h('td', {class: 'nowrap'}, new Date(snapshot.created).toLocaleString(), h('br'),
+        h('span', {class: 'sub'}, snapshot.mine ? 'this workstation' : 'another workstation'),
+        snapshot.local ? h('span', {class: 'badge', style: 'margin-left:6px', title: 'Its zip is already here: download and import ask nothing'}, 'here') : null),
+      h('td', {class: 'num nowrap'}, size(snapshot.size)),
+      h('td', {title: flows.join(', ')}, flows.length ? flows.slice(0, 3).join(', ') : h('span', {class: 'sub'}, 'none'),
+        flows.length > 3 ? h('span', {class: 'sub'}, ' +' + (flows.length - 3) + ' more') : null),
+      h('td', {class: 'nowrap'}, h('div', {class: 'actions'}, download, importButton, remove)));
+  })));
+  return page;
+}
+
+async function busy(button, label, work) {
+  const text = button.textContent;
+  button.disabled = true;
+  button.replaceChildren(h('span', {class: 'spinner'}), ' ' + label);
+  try {
+    return await work();
+  } finally {
+    button.disabled = false;
+    button.replaceChildren(text);
+  }
+}
+
+async function downloadSnapshot(snapshot, button) {
+  try {
+    await busy(button, 'Downloading…', async () => {
+      const response = await fetch('/api/snapshots/download?id=' + encodeURIComponent(snapshot.id));
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || response.statusText);
+      const name = /filename="([^"]+)"/.exec(response.headers.get('Content-Disposition') || '');
+      const link = h('a', {href: URL.createObjectURL(await response.blob()), download: name ? name[1] : snapshot.proxy + '.zip'});
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 60000);
+    });
+    snapshot.local = true;
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function importSnapshot(snapshot, button) {
+  let preview;
+  try {
+    preview = await busy(button, 'Comparing…', () => api.importSnapshot(snapshot.id, false));
+    snapshot.local = true;
+  } catch (error) {
+    toast(error.message, true);
+    return;
+  }
+  const changes = preview.bundles.filter(b => !b.exists || b.added.length || b.changed.length || b.removed.length);
+  if (!changes.length) {
+    toast('Nothing to import: ' + snapshot.proxy + ' and its shared flows are already as in this snapshot.');
+    return;
+  }
+  const rows = preview.bundles.map(b => {
+    const callers = b.callers && b.callers.proxies.length ? b.callers.proxies.map(p => p.name) : [];
+    const state = !b.exists ? h('span', {class: 'badge ok'}, 'new')
+      : !(b.added.length || b.changed.length || b.removed.length) ? h('span', {class: 'badge'}, 'unchanged')
+      : h('span', {}, [b.added.length ? b.added.length + ' added' : null, b.changed.length ? b.changed.length + ' changed' : null,
+        b.removed.length ? b.removed.length + ' removed' : null].filter(Boolean).join(', '));
+    return h('tr', {},
+      h('td', {}, h('b', {}, b.name), h('br'), h('span', {class: 'sub'}, b.type)),
+      h('td', {}, state,
+        b.removed.length ? h('details', {}, h('summary', {class: 'sub'}, 'Files removed'),
+          h('ul', {class: 'sub'}, b.removed.map(f => h('li', {class: 'mono'}, f)))) : null,
+        callers.length && (b.added.length || b.changed.length || b.removed.length)
+          ? h('p', {class: 'sub warn'}, 'Also called by ' + callers.join(', ') + ': they change too.') : null),
+      h('td', {class: 'mono sub', style: 'overflow-wrap:anywhere'}, b.folder));
+  });
+  const ok = await new Promise(resolve => {
+    const dialog = h('dialog', {class: 'wide'},
+      h('h2', {}, 'Import ' + snapshot.proxy),
+      h('p', {}, 'Each folder below is written as in the snapshot: files are added, replaced, and those it does not hold are removed. '
+        + 'A folder that exists gets a history step first, so the import can be undone from the History tab.'),
+      table(['Bundle', 'What changes', 'Folder'], rows),
+      h('div', {class: 'actions'},
+        h('button', {type: 'button', onclick: () => { dialog.close(); resolve(false); }}, 'Cancel'),
+        h('button', {type: 'button', class: 'primary', onclick: () => { dialog.close(); resolve(true); }}, 'Import')));
+    dialog.addEventListener('close', () => { dialog.remove(); resolve(false); });
+    document.body.append(dialog);
+    dialog.showModal();
+  });
+  if (!ok) return;
+  try {
+    const done = await busy(button, 'Importing…', () => api.importSnapshot(snapshot.id, true));
+    toast('Imported: ' + (done.written.join(', ') || 'nothing changed'));
+    location.hash = '#/proxy/' + encodeURIComponent(done.proxyId);
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function deleteSnapshot(snapshot, button) {
+  if (!await confirmDialog('Delete this snapshot?', 'The snapshot of ' + snapshot.proxy + ' sent '
+      + new Date(snapshot.created).toLocaleString() + ' is deleted for every workstation of the team. This cannot be undone.', 'Delete')) return;
+  try {
+    await busy(button, 'Deleting…', () => api.deleteSnapshot(snapshot.id));
+    snapshotState.list = snapshotState.list.filter(s => s.id !== snapshot.id);
+    route();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
 
 async function overviewView() {
   const overview = await api.overview();
