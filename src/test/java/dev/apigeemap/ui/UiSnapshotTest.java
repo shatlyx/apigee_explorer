@@ -65,6 +65,13 @@ class UiSnapshotTest {
         Path aliceJar = tmp.resolve("a/proxies/orders-api/apiproxy/" + JAR);
         Files.createDirectories(aliceJar.getParent());
         Files.write(aliceJar, jar);
+        // a test project kept in the proxy, managed outside the app, with what its own tools make
+        Path project = tmp.resolve("a/proxies/orders-api/apiproxy/tests");
+        write(project.resolve("package.json"), "{\"name\":\"orders-api-tests\"}");
+        write(project.resolve("features/orders.feature"), "Feature: orders\n");
+        write(project.resolve("node_modules/apickli/index.js"), "module.exports = {};");
+        write(project.resolve(".git/HEAD"), "ref: refs/heads/main\n");
+        write(project.resolve("target/report.html"), "<html/>");
         Files.createDirectories(tmp.resolve("b/proxies"));
         Files.createDirectories(tmp.resolve("b/sharedflows"));
         startBackend();
@@ -108,6 +115,13 @@ class UiSnapshotTest {
         assertSameTree(tmp.resolve("a/sharedflows/sf-logging/sharedflowbundle"),
                 tmp.resolve("b/sharedflows/sf-logging/sharedflowbundle"));
         assertArrayEquals(jar, Files.readAllBytes(tmp.resolve("b/proxies/orders-api/apiproxy/" + JAR)));
+        Path tests = tmp.resolve("b/proxies/orders-api/apiproxy/tests");
+        assertTrue(Files.isRegularFile(tests.resolve("features/orders.feature")), "the test project comes along");
+        assertTrue(Files.isRegularFile(tests.resolve("package.json")));
+        for (String left : List.of("node_modules", ".git", "target")) {
+            assertFalse(Files.exists(tests.resolve(left)), left + " is not sent");
+        }
+        write(tests.resolve("node_modules/apickli/index.js"), "module.exports = {};");
 
         // Bob changes and adds files; importing again puts back the snapshot, as a step he can undo
         Path policy = tmp.resolve("b/proxies/orders-api/apiproxy/policies/FC-Logging.xml");
@@ -123,6 +137,7 @@ class UiSnapshotTest {
         assertEquals(List.of("orders-api"), done.get("written"), "unchanged shared flows are left alone");
         assertEquals(original, Files.readString(policy));
         assertFalse(Files.exists(tmp.resolve("b/proxies/orders-api/apiproxy/policies/Extra.xml")));
+        assertTrue(Files.exists(tests.resolve("node_modules/apickli/index.js")), "an import leaves installed dependencies");
         String history = get(bob, "/api/history?id=orders-api").body();
         assertTrue(history.contains("Snapshot imported: before the review"), history);
         assertTrue(history.contains("\"original\": true") || history.contains("\"original\":true"), "Bob's edits are kept in the step before");
@@ -136,6 +151,22 @@ class UiSnapshotTest {
 
         assertEquals(200, send(bob, "/api/snapshots/delete?id=" + id, "").statusCode());
         assertTrue(snapshots.isEmpty());
+    }
+
+    @Test
+    void leavesOutWhatATestProjectMakesButNotNodeResources() {
+        assertTrue(SnapshotService.sent("tests/features/orders.feature"));
+        assertTrue(SnapshotService.sent("resources/node/node_modules/express/index.js"));
+        assertTrue(SnapshotService.sent("resources/java/target.jar"));
+        assertFalse(SnapshotService.sent("tests/node_modules/apickli/index.js"));
+        assertFalse(SnapshotService.sent("tests/.git/HEAD"));
+        assertFalse(SnapshotService.sent("tests/target/report.html"));
+        assertFalse(SnapshotService.sent("policies/.DS_Store"));
+    }
+
+    private static void write(Path file, String text) throws IOException {
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, text);
     }
 
     private UiServer workstation(Path dir) throws Exception {
@@ -227,7 +258,8 @@ class UiSnapshotTest {
 
     private static List<String> files(Path dir) throws IOException {
         try (Stream<Path> walk = Files.walk(dir)) {
-            return walk.filter(Files::isRegularFile).map(p -> dir.relativize(p).toString().replace('\\', '/')).sorted().toList();
+            return walk.filter(Files::isRegularFile).map(p -> dir.relativize(p).toString().replace('\\', '/'))
+                    .filter(SnapshotService::sent).sorted().toList();
         }
     }
 

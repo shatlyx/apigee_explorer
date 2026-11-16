@@ -60,6 +60,12 @@ final class SnapshotService {
     static final int KEPT = 10;
     private static final String SHARED_FLOWS = "sharedflows/";
     private static final Set<String> NOISE = Set.of(".DS_Store", "Thumbs.db");
+    /**
+     * Folders a test project kept in the bundle (managed outside this app) makes for itself: installed dependencies,
+     * build output, its own repository. Not sent, and left in place by an import. Under {@code resources/} nothing is
+     * left out, as a Node.js target keeps its {@code node_modules} there.
+     */
+    static final Set<String> LEFT_OUT = Set.of("node_modules", ".git", "target");
     private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmm")
             .withZone(ZoneId.systemDefault());
 
@@ -92,7 +98,8 @@ final class SnapshotService {
                         : bundle.type() == BundleType.SHARED_FLOW ? "sharedflowbundle/" : "apiproxy/";
                 List<Path> paths;
                 try (Stream<Path> walk = Files.walk(base)) {
-                    paths = walk.filter(Files::isRegularFile).sorted().toList();
+                    paths = walk.filter(Files::isRegularFile).filter(p -> sent(Xml.relativePath(base, p))).sorted()
+                            .toList();
                 }
                 for (Path file : paths) {
                     ZipEntry entry = new ZipEntry(prefix + Xml.relativePath(base, file));
@@ -335,7 +342,7 @@ final class SnapshotService {
         Map<String, Path> onDisk = new TreeMap<>();
         if (exists) {
             try (Stream<Path> walk = Files.walk(folder)) {
-                walk.filter(Files::isRegularFile).filter(p -> !NOISE.contains(p.getFileName().toString()))
+                walk.filter(Files::isRegularFile).filter(p -> sent(Xml.relativePath(folder, p)))
                         .forEach(p -> onDisk.put(Xml.relativePath(folder, p), p));
             }
         }
@@ -372,6 +379,15 @@ final class SnapshotService {
         } finally {
             if (history != null) history.close();
         }
+    }
+
+    /** Whether a file of a bundle (its path inside the bundle, with {@code /}) goes in a snapshot. */
+    static boolean sent(String path) {
+        String[] parts = path.split("/");
+        if (NOISE.contains(parts[parts.length - 1])) return false;
+        if (parts[0].equals("resources")) return true;
+        for (int i = 0; i < parts.length - 1; i++) if (LEFT_OUT.contains(parts[i])) return false;
+        return true;
     }
 
     private static void removeEmptyFolders(Path folder) throws IOException {
