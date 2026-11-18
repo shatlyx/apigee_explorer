@@ -1,0 +1,8 @@
+                int st = call("POST", exists ? entry + "/" + seg(e.getKey()) : entry, JsonUtils.toJson(body));
+                if (!exists && st != 200 && st != 201) {
+                    Map<String, Object> mapBody = new LinkedHashMap<>();
+                    mapBody.put("name", map);
+                    mapBody.put("entry", List.of(body));
+                    st = call("POST", "/" + seg(map), JsonUtils.toJson(mapBody));
+                }
+                check(st, map + " / " + e.getKey());
